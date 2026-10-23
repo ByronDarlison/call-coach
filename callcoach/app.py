@@ -156,7 +156,6 @@ async def start_session() -> None:
         capture_bin=Path(config.get("capture_bin", ROOT.parent / "bin" / "cc-capture")),
         model=Path(os.path.expanduser(config.get("model", SUPPORT / "models" / "ggml-small.en.bin"))),
         emit=on_line,
-        prompt=(session.title + ". " + " ".join(q.text for q in session.questions))[:600],
     )
     await pipeline.start()
     session.running, session.started, session.saved = True, datetime.now(), []

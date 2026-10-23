@@ -73,9 +73,8 @@ class StreamBuffer:
 
 
 class Pipeline:
-    def __init__(self, capture_bin: Path, model: Path, emit: Emit, whisper_port: int = 8178, prompt: str = ""):
+    def __init__(self, capture_bin: Path, model: Path, emit: Emit, whisper_port: int = 8178):
         self.capture_bin = capture_bin
-        self.prompt = prompt  # names and terms from the questions, so Whisper spells them right
         self.model = model
         self.emit = emit
         self.port = whisper_port
@@ -94,7 +93,6 @@ class Pipeline:
             raise RuntimeError(f"Whisper model missing at {self.model}; run scripts/install.sh")
         self.whisper = await asyncio.create_subprocess_exec(
             whisper_bin, "-m", str(self.model), "--host", "127.0.0.1", "--port", str(self.port), "-nt",
-            *(["--prompt", self.prompt, "--carry-initial-prompt"] if self.prompt else []),
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         )
         await self._wait_for_whisper()
