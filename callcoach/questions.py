@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?(.+?)\s*$")
-HEADING = re.compile(r"^\s*#{1,6}\s+(.+?)\s*$")
+HEADING = re.compile(r"^\s*#{2,6}\s+(.+?)\s*$")  # a single # heading is the file's title, not a section
 
 
 @dataclass
