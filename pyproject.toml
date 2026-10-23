@@ -1,0 +1,20 @@
+[project]
+name = "call-coach"
+version = "0.1.0"
+description = "Live interview checklist: local transcription, Jev checkmarks, MCP follow-ups."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["mcp>=1.10,<2"]
+
+[project.scripts]
+call-coach = "callcoach.app:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["callcoach"]
+
+[tool.setuptools.package-data]
+callcoach = ["static/*"]

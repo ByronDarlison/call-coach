@@ -1,0 +1,11 @@
+{
+  "name": "Call Coach",
+  "short_name": "Call Coach",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f7f5",
+  "theme_color": "#1f2933",
+  "icons": [
+    {"src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}
+  ]
+}
