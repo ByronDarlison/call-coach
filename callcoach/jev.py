@@ -14,7 +14,7 @@ import httpx
 
 from .questions import Question
 
-ANSWERED_THRESHOLD = 0.8
+ANSWERED_THRESHOLD = 0.5  # live tests: real answers scored 0.6 to 0.97, non-answers 0.01 to 0.12
 PASSES_TO_CHECK = 2
 STATE_CHAR_LIMIT = 6000
 
