@@ -21,6 +21,8 @@ from .questions import Followup, Question, output_paths, parse_questions, render
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
 SUPPORT = Path.home() / "Library" / "Application Support" / "call-coach"
+CALLS_INDEX = Path(os.environ.get("CALL_COACH_CALLS_INDEX", SUPPORT / "calls.json"))  # saved calls, newest first
+NEW_FILES = Path.home() / "Documents" / "Call Coach"  # where questions written by an AI are saved
 CONFIG_PATH = Path(os.environ.get("CALL_COACH_CONFIG", Path.home() / ".config" / "call-coach" / "config.json"))
 JEV_EVERY = 4.0
 JEV_WINDOW_LINES = 40
@@ -41,6 +43,11 @@ class Session:
         self.status = "Choose a questions file to begin."
         self.version = 0
         self.changed = asyncio.Condition()
+        self.next_override: int | None = None  # a question the AI picked to ask next
+        self.notices: list[dict] = []  # short on-page notices, e.g. "Claude added a follow-up"
+
+    def notice(self, text: str) -> None:
+        self.notices = (self.notices + [{"id": self.version + 1, "text": text}])[-5:]
 
     async def bump(self) -> None:
         async with self.changed:
@@ -48,6 +55,11 @@ class Session:
             self.changed.notify_all()
 
     def next_question(self) -> Question | None:
+        if self.next_override:
+            picked = self.questions[self.next_override - 1]
+            if not picked.answered:
+                return picked
+            self.next_override = None
         open_ = [q for q in self.questions if not q.answered]
         best = max(open_, key=lambda q: q.fit_score, default=None)
         return best if best and best.fit_score >= FIT_MINIMUM else None
@@ -62,6 +74,8 @@ class Session:
             "status": self.status,
             "saved": self.saved,
             "next": nxt.number if nxt else None,
+            "next_by": "ai" if nxt and nxt.number == self.next_override else ("jev" if nxt else None),
+            "notices": self.notices,
             "questions": [
                 {
                     "number": q.number, "text": q.text, "section": q.section, "answered": q.answered,
@@ -85,9 +99,11 @@ jev_task: asyncio.Task | None = None
 mcp = FastMCP(
     "call-coach",
     instructions=(
-        "Call Coach follows a live call. Call get_session first, then loop: wait_for_update with the "
-        "returned cursor, read what the other person just said, and when a good follow-up question "
-        "comes to mind, push it with suggest_followup. Keep follow-ups short and specific."
+        "Call Coach runs a live interview checklist. You can run the whole call: load_questions, start_call, "
+        "then loop wait_for_update with the returned cursor to follow what is said. Add follow-ups with "
+        "add_question, steer the interviewer with set_next_question, and tick or untick with mark_question "
+        "(Jev also ticks answered questions automatically). stop_call saves the transcript and results; "
+        "list_saved_calls and read_saved_call read past calls back. Keep follow-ups short and specific."
     ),
     port=int(os.environ.get("CALL_COACH_PORT", "4800")),
 )
@@ -134,6 +150,7 @@ def load_questions(path: Path) -> None:
     session.title = path.stem.replace("-", " ").replace("_", " ").strip().capitalize()
     session.questions = parse_questions(path.read_text())
     session.loose, session.lines, session.partial, session.saved = [], [], {}, []
+    session.next_override, session.notices = None, []
     session.status = f"Loaded {len(session.questions)} questions. Put on headphones, then press Start."
 
 
@@ -182,6 +199,12 @@ async def stop_session() -> None:
     results_path.write_text(render_results(session.title, session.started, session.questions, session.loose))
     session.saved = [str(transcript_path), str(results_path)]
     session.status = "Stopped. Results saved."
+    calls = json.loads(CALLS_INDEX.read_text()) if CALLS_INDEX.exists() else []
+    calls.insert(0, {"title": session.title, "started": session.started.isoformat(timespec="minutes"),
+                     "questions": str(session.questions_path), "transcript": str(transcript_path),
+                     "results": str(results_path)})
+    CALLS_INDEX.parent.mkdir(parents=True, exist_ok=True)
+    CALLS_INDEX.write_text(json.dumps(calls[:200], indent=1))
 
 
 def choose_file() -> Path | None:
@@ -311,8 +334,12 @@ def add_followup(text: str, number, source: str) -> str:
         if not 1 <= n <= len(session.questions):
             raise RuntimeError(f"There is no question {n}.")
         session.questions[n - 1].followups.append(followup)
+        if source == "mcp":
+            session.notice(f"AI added a follow-up under question {n}")
         return f"Added under question {n}."
     session.loose.append(followup)
+    if source == "mcp":
+        session.notice("AI added a follow-up question")
     return "Added to Follow-ups."
 
 
@@ -350,11 +377,88 @@ async def wait_for_update(cursor: int, timeout_seconds: int = 60) -> dict:
 
 
 @mcp.tool()
-async def suggest_followup(text: str, question_number: int | None = None) -> str:
-    """Put a follow-up question on the page, optionally under the numbered question it relates to."""
-    message = add_followup(text, question_number, "mcp")
+async def load_questions_file(path: str | None = None, markdown: str | None = None, title: str | None = None) -> str:
+    """Load the questions for a call: either the path of a Markdown file, or Markdown you write (every list
+    item is a question, ## headings group them). Written questions are saved to ~/Documents/Call Coach."""
+    if session.running:
+        raise RuntimeError("Stop the call before loading other questions.")
+    if markdown:
+        NEW_FILES.mkdir(parents=True, exist_ok=True)
+        name = "-".join((title or "questions").lower().split())[:60]
+        target = NEW_FILES / f"{name}.md"
+        target.write_text((f"# {title}\n\n" if title else "") + markdown.strip() + "\n")
+    elif path:
+        target = Path(path).expanduser().resolve()
+    else:
+        raise RuntimeError("Give a path or some markdown.")
+    load_questions(target)
+    await session.bump()
+    return f"Loaded {len(session.questions)} questions from {target}."
+
+
+@mcp.tool()
+async def start_call() -> str:
+    """Start listening: capture both sides, transcribe, and tick questions as they are answered."""
+    await start_session()
+    await session.bump()
+    return session.status
+
+
+@mcp.tool()
+async def stop_call() -> dict:
+    """Stop listening and save the transcript and results next to the questions file."""
+    await stop_session()
+    await session.bump()
+    return {"status": session.status, "saved": session.saved}
+
+
+@mcp.tool()
+async def add_question(text: str, under_question: int | None = None) -> str:
+    """Add a follow-up question to the page, under the numbered question it relates to, or on its own."""
+    message = add_followup(text, under_question, "mcp")
     await session.bump()
     return message
+
+
+@mcp.tool()
+async def set_next_question(number: int) -> str:
+    """Show this open question in the page's Ask next bar, instead of Jev's pick."""
+    if not 1 <= number <= len(session.questions):
+        raise RuntimeError(f"There is no question {number}.")
+    if session.questions[number - 1].answered:
+        raise RuntimeError(f"Question {number} is already answered.")
+    session.next_override = number
+    await session.bump()
+    return f"Ask next: question {number}."
+
+
+@mcp.tool()
+async def mark_question(number: int, answered: bool = True) -> str:
+    """Tick (or untick) a question. Jev will not change a question you have marked."""
+    if not 1 <= number <= len(session.questions):
+        raise RuntimeError(f"There is no question {number}.")
+    q = session.questions[number - 1]
+    q.answered, q.manual = answered, True
+    await session.bump()
+    return f"Question {number} {'ticked' if answered else 'unticked'}."
+
+
+@mcp.tool()
+async def list_saved_calls(limit: int = 20) -> list[dict]:
+    """Past calls, newest first: title, start time, and the paths of their questions, transcript and results."""
+    calls = json.loads(CALLS_INDEX.read_text()) if CALLS_INDEX.exists() else []
+    return [dict(c, index=i) for i, c in enumerate(calls[: max(1, limit)])]
+
+
+@mcp.tool()
+async def read_saved_call(index: int = 0) -> dict:
+    """Read a saved call from list_saved_calls (0 = the latest): its results checklist and its transcript."""
+    calls = json.loads(CALLS_INDEX.read_text()) if CALLS_INDEX.exists() else []
+    if not 0 <= index < len(calls):
+        raise RuntimeError("No saved call at that index.")
+    call = calls[index]
+    return {"title": call["title"], "started": call["started"],
+            "results": Path(call["results"]).read_text(), "transcript": Path(call["transcript"]).read_text()}
 
 
 @mcp.tool()

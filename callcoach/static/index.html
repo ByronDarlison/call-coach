@@ -56,6 +56,19 @@
   .partial { color: var(--muted); font-style: italic; }
   .saved { font-size: 13px; color: var(--done); }
   .empty { color: var(--muted); }
+  #asknext { display: none; align-items: baseline; gap: 12px; padding: 12px 16px; background: var(--accent);
+             color: #fff; font-size: 18px; line-height: 1.35; }
+  #asknext.show { display: flex; }
+  #asknext .label { font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+                    opacity: .85; white-space: nowrap; }
+  #asknext .by { font-size: 12px; opacity: .8; white-space: nowrap; margin-left: auto; }
+  #toasts { position: fixed; top: 116px; right: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 10; }
+  .toast { background: #1f2933; color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 14px;
+           box-shadow: 0 6px 18px rgba(0,0,0,.25); animation: toast 6s forwards; }
+  @keyframes toast { 0% { opacity: 0; transform: translateY(-6px); } 6% { opacity: 1; transform: none; }
+                     85% { opacity: 1; } 100% { opacity: 0; } }
+  .follow li.new { animation: flash 4s ease-out; border-radius: 4px; }
+  @keyframes flash { 0%, 40% { background: #fde68a; } 100% { background: transparent; } }
   @media (max-width: 760px) {
     main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
     section + section { border-left: 0; border-top: 1px solid var(--line); }
@@ -71,6 +84,8 @@
   <span class="hint">Use headphones.</span>
   <span id="status"></span>
 </header>
+<div id="asknext"><span class="label">Ask next</span><span id="asknext-text"></span><span class="by" id="asknext-by"></span></div>
+<div id="toasts"></div>
 <main>
   <section>
     <h2>Questions</h2>
@@ -101,9 +116,11 @@ function renderQuestions(s) {
       section = q.section; html += `<h3>${esc(section)}</h3><ol>`;
     } else if (!html) html += "<ol>";
     const cls = ["q", q.answered ? "answered" : "", s.next === q.number ? "next" : ""].join(" ");
-    const follow = q.followups.map((f, i) =>
-      `<li class="${f.answered ? "answered" : ""}"><input type="checkbox" data-n="${q.number}" data-f="${i}" ${f.answered ? "checked" : ""}>` +
-      `<span>${esc(f.text)}</span>${f.source === "mcp" ? '<span class="tag">suggested</span>' : ""}</li>`).join("");
+    const follow = q.followups.map((f, i) => {
+      const key = `${q.number}:${i}`, fresh = seenFollowups !== null && !seenFollowups.has(key);
+      return `<li class="${f.answered ? "answered" : ""} ${fresh ? "new" : ""}"><input type="checkbox" data-n="${q.number}" data-f="${i}" ${f.answered ? "checked" : ""}>` +
+        `<span>${esc(f.text)}</span>${f.source === "mcp" ? '<span class="tag">from AI</span>' : ""}</li>`;
+    }).join("");
     html += `<li class="${cls}"><span class="num">${q.number}</span>` +
       `<input type="checkbox" data-n="${q.number}" ${q.answered ? "checked" : ""}>` +
       `<div><span class="text">${esc(q.text)}</span>${s.next === q.number ? '<span class="tag">ask next</span>' : ""}` +
@@ -112,9 +129,10 @@ function renderQuestions(s) {
   html += "</ol>";
   if (s.loose_followups.length) {
     html += "<h3>Follow-ups</h3><ul class='follow'>" + s.loose_followups.map((f) =>
-      `<li><span>${esc(f.text)}</span>${f.source === "mcp" ? '<span class="tag">suggested</span>' : ""}</li>`).join("") + "</ul>";
+      `<li><span>${esc(f.text)}</span>${f.source === "mcp" ? '<span class="tag">from AI</span>' : ""}</li>`).join("") + "</ul>";
   }
   $("questions").innerHTML = html;
+  seenFollowups = new Set(s.questions.flatMap((q) => q.followups.map((_, i) => `${q.number}:${i}`)));
   followQuestions(s);
 }
 
@@ -146,6 +164,27 @@ function renderTranscript(s) {
   if (atBottom) pane.scrollTop = pane.scrollHeight;
 }
 
+let seenFollowups = null, seenNotice = null;
+
+function renderAskNext(s) {
+  const q = s.next ? s.questions[s.next - 1] : (s.running ? s.questions.find((x) => !x.answered) : null);
+  $("asknext").classList.toggle("show", Boolean(q));
+  if (!q) return;
+  $("asknext-text").textContent = `${q.number}. ${q.text}`;
+  $("asknext-by").textContent = s.next_by === "ai" ? "picked by AI" : s.next_by === "jev" ? "best fit right now" : "next in order";
+}
+
+function renderNotices(s) {
+  const fresh = (s.notices || []).filter((n) => seenNotice !== null && n.id > seenNotice);
+  for (const n of fresh) {
+    const el = document.createElement("div");
+    el.className = "toast"; el.textContent = n.text;
+    $("toasts").appendChild(el);
+    setTimeout(() => el.remove(), 6200);
+  }
+  seenNotice = Math.max(seenNotice ?? 0, ...(s.notices || []).map((n) => n.id), 0);
+}
+
 function render(s) {
   $("title").textContent = s.title || "Call Coach";
   $("start").disabled = s.running || !s.questions.length;
@@ -154,6 +193,8 @@ function render(s) {
   const st = $("status");
   st.textContent = s.status + (s.saved.length ? "  " + s.saved.map((p) => p.split("/").pop()).join(", ") : "");
   st.className = /error|failed|missing|not found|No Jev/i.test(s.status) ? "error" : "";
+  renderAskNext(s);
+  renderNotices(s);
   renderQuestions(s);
   renderTranscript(s);
 }
