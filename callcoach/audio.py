@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 import re
 import shutil
 import struct
@@ -22,8 +23,10 @@ from typing import Awaitable, Callable
 import httpx
 
 RATE = 16_000
-SPEECH_RMS = 0.012
-PAUSE_SECONDS = 0.7
+MIN_SPEECH_RMS = 0.004  # never treat anything quieter than this as speech
+NOISE_MULTIPLE = 3.0  # speech is this many times louder than the room's noise floor
+PAUSE_SECONDS = 1.0
+LEAD_IN_SECONDS = 1.0  # audio kept from before speech is detected, so soft starts are not cut
 MAX_SECONDS = 12.0
 PARTIAL_EVERY = 1.5
 SPEAKERS = {"S": "Them", "M": "You"}
@@ -62,14 +65,24 @@ class StreamBuffer:
         self.last_speech = 0.0
         self.last_partial = 0.0
         self.busy = False
+        self.utterance = 0  # bumped at each finalize so a late partial cannot overwrite a final line
+        self.noise_floor = MIN_SPEECH_RMS / NOISE_MULTIPLE
+        self.recording = array("f") if os.environ.get("CALL_COACH_DEBUG_AUDIO") else None
 
     def add(self, chunk: array, now: float) -> None:
         self.samples.extend(chunk)
-        if _rms(chunk) >= SPEECH_RMS:
+        if self.recording is not None:
+            self.recording.extend(chunk)
+        level = _rms(chunk)
+        if level >= max(MIN_SPEECH_RMS, self.noise_floor * NOISE_MULTIPLE):
             self.has_speech = True
             self.last_speech = now
-        if not self.has_speech and len(self.samples) > RATE // 2:
-            del self.samples[: len(self.samples) - RATE // 4]  # keep a little lead-in only
+        else:
+            # Follow the room's background level slowly, so a noisy mic is not heard as constant speech.
+            self.noise_floor = 0.95 * self.noise_floor + 0.05 * level
+        lead_in = int(RATE * LEAD_IN_SECONDS)
+        if not self.has_speech and len(self.samples) > 2 * lead_in:
+            del self.samples[: len(self.samples) - lead_in]
 
 
 class Pipeline:
@@ -151,12 +164,14 @@ class Pipeline:
                 if paused or seconds >= MAX_SECONDS:
                     samples = buf.samples
                     buf.samples, buf.has_speech = array("f"), False
+                    buf.utterance += 1
                     asyncio.create_task(self._run(buf, samples, final=True))
                 elif now - buf.last_partial >= PARTIAL_EVERY and seconds >= 1.0:
                     buf.last_partial = now
                     asyncio.create_task(self._run(buf, array("f", buf.samples), final=False))
 
     async def _run(self, buf: StreamBuffer, samples: array, final: bool) -> None:
+        utterance = buf.utterance
         buf.busy = True
         try:
             resp = await self.client.post(
@@ -170,6 +185,8 @@ class Pipeline:
             return
         finally:
             buf.busy = False
+        if not final and utterance != buf.utterance:
+            return
         if text or final:
             await self.emit(buf.speaker, text, final)
 
@@ -181,6 +198,10 @@ class Pipeline:
             if buf.has_speech and len(buf.samples) > RATE // 2:
                 await self._run(buf, buf.samples, final=True)
             buf.samples, buf.has_speech = array("f"), False
+        folder = os.environ.get("CALL_COACH_DEBUG_AUDIO")
+        if folder:
+            for buf in self.buffers.values():
+                Path(folder, f"{buf.speaker.lower()}.wav").write_bytes(_wav(buf.recording))
         for proc in (self.capture, self.whisper):
             if proc and proc.returncode is None:
                 proc.terminate()
