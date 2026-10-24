@@ -156,6 +156,7 @@ async def start_session() -> None:
         capture_bin=Path(config.get("capture_bin", ROOT.parent / "bin" / "cc-capture")),
         model=Path(os.path.expanduser(config.get("model", SUPPORT / "models" / "ggml-small.en.bin"))),
         emit=on_line,
+        whisper_port=int(os.environ.get("CALL_COACH_WHISPER_PORT", "8178")),
     )
     await pipeline.start()
     session.running, session.started, session.saved = True, datetime.now(), []
@@ -286,6 +287,18 @@ async def api_dev_line(request: Request) -> Response:
     body = await request.json()
     await on_line(body.get("speaker", "Them"), body["text"], True)
     return JSONResponse({"ok": True})
+
+
+@mcp.custom_route("/api/dev-load", methods=["POST"])
+async def api_dev_load(request: Request) -> Response:
+    """Load a questions file by path without the file picker. Only enabled with --dev."""
+    if not config.get("dev"):
+        return Response(status_code=404)
+    body = await request.json()
+
+    async def run():
+        load_questions(Path(body["path"]).expanduser().resolve())
+    return await _action(run)
 
 
 def add_followup(text: str, number, source: str) -> str:

@@ -115,7 +115,24 @@ function renderQuestions(s) {
       `<li><span>${esc(f.text)}</span>${f.source === "mcp" ? '<span class="tag">suggested</span>' : ""}</li>`).join("") + "</ul>";
   }
   $("questions").innerHTML = html;
+  followQuestions(s);
 }
+
+// Keep the live part of the list in view by following the first open question.
+// A manual scroll pauses this for 15 seconds.
+let userScrolledAt = 0;
+const questionPane = () => $("questions").parentElement;
+function followQuestions(s) {
+  if (!s.running || Date.now() - userScrolledAt < 15000) return;
+  const target = $("questions").querySelector("li.q:not(.answered)");
+  if (!target) return;
+  const pane = questionPane();
+  const top = target.offsetTop - pane.offsetTop - pane.clientHeight / 3;
+  autoScrolling = true;
+  pane.scrollTo({top: Math.max(0, top), behavior: "smooth"});
+  setTimeout(() => { autoScrolling = false; }, 800);
+}
+let autoScrolling = false;
 
 function renderTranscript(s) {
   const pane = $("transcript-pane");
@@ -142,6 +159,7 @@ function render(s) {
 }
 
 new EventSource("/events").onmessage = (e) => render(JSON.parse(e.data));
+questionPane().addEventListener("scroll", () => { if (!autoScrolling) userScrolledAt = Date.now(); });
 $("choose").onclick = () => post("/api/choose");
 $("start").onclick = () => post("/api/start");
 $("stop").onclick = () => post("/api/stop");

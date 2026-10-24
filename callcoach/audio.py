@@ -134,7 +134,7 @@ class Pipeline:
                 tag = chr(header[0])
                 (count,) = struct.unpack("<I", header[1:])
                 payload = await reader.readexactly(count * 4)
-                if tag in self.buffers:
+                if tag in self.buffers and not (tag == "M" and os.environ.get("CALL_COACH_NO_MIC")):
                     chunk = array("f")
                     chunk.frombytes(payload)
                     self.buffers[tag].add(chunk, time.monotonic())
