@@ -81,12 +81,14 @@ class JevClient:
         resp.raise_for_status()
         return resp.json().get("answers", {})
 
-    async def which_question(self, line: str, items: list) -> tuple[float, str | None]:
-        """Is the interviewer's line a question, and which listed item is it (None = not on the list)?"""
+    async def which_question(self, line: str, items: list) -> tuple[float, str | None, float]:
+        """Is the interviewer's line a question, which listed item is it (None = not on the list), and how
+        sure is it that the interviewer is wrapping up the call?"""
         criteria = {item.key.replace(".", "-"): item.text for item in items}
         criteria["none"] = "None of these: a different question, or not a question"
         answers = await self._ask(f"The interviewer just said: \"{line}\"", {
             "is_q": {"type": "noul", "instructions": "The interviewer is asking the other person a question"},
+            "end": {"type": "noul", "instructions": "The interviewer is wrapping up and ending the interview now"},
             "which": {"type": "choice", "criteria": criteria, "instructions":
                       "Which listed question is the interviewer asking? Same meaning counts, even if worded differently."},
         })
@@ -94,10 +96,11 @@ class JevClient:
         choice = which.get("choice", "none")
         sure = float(which.get("probabilities", {}).get(choice, 0.0))
         is_question = float(answers.get("is_q", {}).get("noul", 0.0))
+        ending = float(answers.get("end", {}).get("noul", 0.0))
         if choice == "none":
-            return is_question, None
+            return is_question, None, ending
         # A listed question it is not clearly asking is neither matched nor off-list.
-        return is_question, choice.replace("-", ".") if sure >= CLEAR_MATCH else "unclear"
+        return is_question, choice.replace("-", ".") if sure >= CLEAR_MATCH else "unclear", ending
 
     async def worth_follow_up(self, line: str) -> float:
         """How strongly the interviewee's line invites a follow-up: surprising or revealing, not routine detail."""

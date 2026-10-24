@@ -31,6 +31,7 @@ JUMP_FIT = 0.85  # Jev may jump ahead of list order only when a later question f
 JUMP_MARGIN = 0.3  # ...and fits this much better than the next question in order
 OFF_LIST_THRESHOLD = 0.6  # tested: real questions 0.97 to 0.98, "Okay, great" 0.12
 FOLLOW_UP_THRESHOLD = 0.5  # tested on 47 demo answers: flags the 9 most revealing, routine ones score 0.13 to 0.47
+WRAP_UP_THRESHOLD = 0.8  # tested: "That is all my questions" 0.94, a polite "thanks" mid-call 0.37
 FOLLOW_UP_COOLDOWN = 2  # no flag if one of the interviewee's previous two answers was already flagged
 
 
@@ -144,7 +145,8 @@ mcp = FastMCP(
         "off-list questions and flags answers worth a follow-up. Your job is follow-ups, so keep calls few: "
         "load_questions_file and start_call if asked, then loop wait_for_update(cursor) with its default "
         "wake_on='follow_up'. When a returned line has worth_follow_up: true, call add_question once with one "
-        "short follow-up (under 15 words) under the question it belongs to. Do not poll, do not call "
+        "short follow-up (under 15 words) under the question it belongs to. When a line has wrapping_up: true, "
+        "call stop_call, then read_saved_call and recap. Do not poll, do not call "
         "set_next_question unless the interviewer asks you to steer, and fetch get_open_questions only when "
         "needed. stop_call saves the transcript and results; list_saved_calls and read_saved_call read past "
         "calls back. Use a small, fast model if you can."
@@ -175,8 +177,10 @@ async def review_line(line: dict) -> None:
         return
     try:
         if line["speaker"] == "You":
-            is_question, key = await asyncio.wait_for(jev.which_question(line["text"], session.items()), 4)
-            if is_question >= OFF_LIST_THRESHOLD:
+            is_question, key, ending = await asyncio.wait_for(jev.which_question(line["text"], session.items()), 4)
+            if ending >= WRAP_UP_THRESHOLD:
+                line["wrapping_up"] = True
+            elif is_question >= OFF_LIST_THRESHOLD:
                 if key == "unclear":
                     pass
                 elif key:
@@ -473,7 +477,7 @@ async def get_session() -> dict:
 
 def _compact(line: dict) -> dict:
     out = {"speaker": line["speaker"], "text": line["text"]}
-    for key in ("asked", "off_list", "worth_follow_up"):
+    for key in ("asked", "off_list", "worth_follow_up", "wrapping_up"):
         if line.get(key):
             out[key] = line[key]
     return out
@@ -483,7 +487,8 @@ def _compact(line: dict) -> dict:
 async def wait_for_update(cursor: int, timeout_seconds: int = 120, wake_on: str = "follow_up") -> dict:
     """Wait for the call to move on, then return only the transcript lines after `cursor` and the next cursor.
     wake_on="follow_up" (default, cheapest) returns as soon as the other person says something Jev marks
-    worth_follow_up, after BATCH_LINES new lines, when the call stops, or at the timeout.
+    worth_follow_up, when the interviewer is wrapping_up, after BATCH_LINES new lines, when the call stops,
+    or at the timeout.
     wake_on="line" returns on every new line. Use get_open_questions only when you need the list."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + max(1, min(timeout_seconds, 300))
@@ -494,7 +499,7 @@ async def wait_for_update(cursor: int, timeout_seconds: int = 120, wake_on: str 
             return True
         if wake_on == "line":
             return bool(new)
-        return len(new) >= BATCH_LINES or any(l.get("worth_follow_up") for l in new)
+        return len(new) >= BATCH_LINES or any(l.get("worth_follow_up") or l.get("wrapping_up") for l in new)
 
     while not ready():
         remaining = deadline - loop.time()
