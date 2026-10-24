@@ -14,6 +14,8 @@ import httpx
 
 
 ANSWERED_THRESHOLD = 0.5  # live tests: real answers scored 0.6 to 0.97, non-answers 0.01 to 0.12
+UNASKED_THRESHOLD = 0.9  # a question nobody has asked yet needs near-certain evidence to be ticked
+CLEAR_MATCH = 0.85  # a line counts as asking a listed question only when Jev is this sure
 PASSES_TO_CHECK = 2
 STATE_CHAR_LIMIT = 6000
 
@@ -88,8 +90,14 @@ class JevClient:
             "which": {"type": "choice", "criteria": criteria, "instructions":
                       "Which listed question is the interviewer asking? Same meaning counts, even if worded differently."},
         })
-        choice = answers.get("which", {}).get("choice", "none")
-        return float(answers.get("is_q", {}).get("noul", 0.0)), (None if choice == "none" else choice.replace("-", "."))
+        which = answers.get("which", {})
+        choice = which.get("choice", "none")
+        sure = float(which.get("probabilities", {}).get(choice, 0.0))
+        is_question = float(answers.get("is_q", {}).get("noul", 0.0))
+        if choice == "none":
+            return is_question, None
+        # A listed question it is not clearly asking is neither matched nor off-list.
+        return is_question, choice.replace("-", ".") if sure >= CLEAR_MATCH else "unclear"
 
     async def worth_follow_up(self, line: str) -> float:
         """How strongly the interviewee's line invites a follow-up: surprising or revealing, not routine detail."""
@@ -115,7 +123,8 @@ def apply_scores(items: list, scores: dict[str, tuple[float, float]]) -> bool:
         item.answered_score, item.fit_score = answered, fit
         if item.manual or item.answered:
             continue
-        item.high_passes = item.high_passes + 1 if answered >= ANSWERED_THRESHOLD else 0
+        bar = ANSWERED_THRESHOLD if getattr(item, "asked", False) or getattr(item, "asked_live", False) else UNASKED_THRESHOLD
+        item.high_passes = item.high_passes + 1 if answered >= bar else 0
         if item.high_passes >= PASSES_TO_CHECK:
             item.answered = True
             changed = True

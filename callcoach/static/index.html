@@ -104,8 +104,8 @@
     <h2>Questions</h2>
     <div id="questions"><p class="empty">No questions loaded.</p></div>
     <form id="add">
-      <input type="text" id="add-text" placeholder="Add a question">
-      <input type="number" id="add-num" min="1" placeholder="Under #">
+      <input type="text" id="add-text" placeholder="Type a question to add to this call">
+      <input type="number" id="add-num" min="1" placeholder="Under #" title="Optional: the number of the question this follows up">
       <button type="submit">Add</button>
     </form>
   </section>
@@ -173,7 +173,6 @@ let autoScrolling = false;
 
 function renderTranscript(s) {
   const pane = $("transcript-pane");
-  const atBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
   let html = s.transcript.map((l) => {
     const mark = l.off_list ? '<span class="mark off">off-list question, recorded</span>'
       : l.worth_follow_up ? '<span class="mark worth">worth a follow-up</span>'
@@ -184,10 +183,16 @@ function renderTranscript(s) {
     if (text) html += `<p class="line partial"><span class="who ${who}">${who}</span>${esc(text)}</p>`;
   }
   $("transcript").innerHTML = html || '<p class="empty">The transcript appears here once the call starts.</p>';
-  if (atBottom) pane.scrollTop = pane.scrollHeight;
+  // Always show the latest line, unless you scrolled back to read something in the last 15 seconds.
+  if (Date.now() - transcriptScrolledAt > 15000) {
+    autoScrollingTranscript = true;
+    pane.scrollTop = pane.scrollHeight;
+    requestAnimationFrame(() => { autoScrollingTranscript = false; });
+  }
 }
 
 let seenFollowups = null, seenNotice = null;
+let transcriptScrolledAt = 0, autoScrollingTranscript = false;
 
 let lastNextKey = null;
 function renderAskNext(s) {
@@ -239,6 +244,11 @@ function render(s) {
 
 new EventSource("/events").onmessage = (e) => render(JSON.parse(e.data));
 questionPane().addEventListener("scroll", () => { if (!autoScrolling) userScrolledAt = Date.now(); });
+$("transcript-pane").addEventListener("scroll", () => {
+  const pane = $("transcript-pane");
+  const atBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 8;
+  if (!autoScrollingTranscript) transcriptScrolledAt = atBottom ? 0 : Date.now();
+});
 $("choose").onclick = () => post("/api/choose");
 $("start").onclick = () => post("/api/start");
 $("stop").onclick = () => post("/api/stop");

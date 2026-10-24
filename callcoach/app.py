@@ -174,7 +174,9 @@ async def review_line(line: dict) -> None:
         if line["speaker"] == "You":
             is_question, key = await asyncio.wait_for(jev.which_question(line["text"], session.items()), 4)
             if is_question >= OFF_LIST_THRESHOLD:
-                if key:
+                if key == "unclear":
+                    pass
+                elif key:
                     line["asked"] = key
                     try:
                         session.find(key).asked = True

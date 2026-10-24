@@ -31,6 +31,8 @@ class ParseTests(unittest.TestCase):
 class ScoreTests(unittest.TestCase):
     def test_needs_two_high_passes_and_respects_manual(self):
         qs = parse_questions(SAMPLE)
+        for q in qs:
+            q.asked = True
         apply_scores(qs, {"1": (0.9, 0.1), "2": (0.95, 0.1)})
         self.assertFalse(qs[0].answered)
         qs[1].manual = True
@@ -38,14 +40,24 @@ class ScoreTests(unittest.TestCase):
         self.assertTrue(qs[0].answered)
         self.assertFalse(qs[1].answered)
 
+    def test_unasked_questions_need_near_certain_evidence(self):
+        qs = parse_questions(SAMPLE)
+        apply_scores(qs, {"1": (0.8, 0)})
+        apply_scores(qs, {"1": (0.8, 0)})
+        self.assertFalse(qs[0].answered)
+        apply_scores(qs, {"1": (0.95, 0)})
+        apply_scores(qs, {"1": (0.95, 0)})
+        self.assertTrue(qs[0].answered)
+
     def test_follow_ups_are_ticked_by_key_too(self):
-        f = Followup("1.1", "Why March?", "mcp")
+        f = Followup("1.1", "Why March?", "mcp", asked=True)
         apply_scores([f], {"1.1": (0.9, 0)})
         apply_scores([f], {"1.1": (0.9, 0)})
         self.assertTrue(f.answered)
 
     def test_a_low_pass_resets_the_count(self):
         qs = parse_questions(SAMPLE)
+        qs[0].asked = True
         apply_scores(qs, {"1": (0.9, 0)})
         apply_scores(qs, {"1": (0.2, 0)})
         apply_scores(qs, {"1": (0.9, 0)})
