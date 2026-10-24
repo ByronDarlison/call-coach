@@ -8,6 +8,7 @@ dependencies = ["mcp>=1.10,<2"]
 
 [project.scripts]
 call-coach = "callcoach.app:main"
+call-coach-cli = "callcoach.cli:main"
 
 [build-system]
 requires = ["setuptools>=69"]

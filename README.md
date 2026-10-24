@@ -78,6 +78,17 @@ Then ask it, for example: "Run my interview in Call Coach with ~/interviews/foun
 | `get_session` / `get_transcript` | The full state, or the transcript as Markdown |
 | `list_saved_calls` / `read_saved_call` | Find and read past calls, for recaps or preparing the next one |
 
+**Agents with a shell but no MCP** can use the same tools from the command line:
+
+    .venv/bin/call-coach-cli tools
+    .venv/bin/call-coach-cli load_questions_file path=~/interviews/founder.md
+    .venv/bin/call-coach-cli start_call
+    .venv/bin/call-coach-cli wait_for_update cursor=0
+    .venv/bin/call-coach-cli add_question text="Who were those six?" under_question=1
+    .venv/bin/call-coach-cli stop_call
+
+Each prints JSON. Set `CALL_COACH_URL` to reach a copy on another port.
+
 Cloud-hosted assistants (for example ChatGPT or claude.ai in a browser) cannot reach `localhost`. Do not expose the endpoint through a tunnel: it has no login.
 
 ## Cost
