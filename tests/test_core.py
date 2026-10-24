@@ -52,6 +52,35 @@ class ScoreTests(unittest.TestCase):
         self.assertFalse(qs[0].answered)
 
 
+class NextQuestionTests(unittest.TestCase):
+    def setUp(self):
+        from callcoach.app import Session
+        self.s = Session()
+        self.s.questions = parse_questions(SAMPLE)
+
+    def test_list_order_by_default_even_when_a_later_question_fits_a_bit_better(self):
+        self.s.questions[3].fit_score = 0.7
+        item, by = self.s.next_item()
+        self.assertEqual((item.number, by), (1, "order"))
+
+    def test_asked_questions_are_skipped(self):
+        self.s.questions[0].asked = True
+        self.assertEqual(self.s.next_item()[0].number, 2)
+
+    def test_jev_jumps_only_on_strong_evidence(self):
+        self.s.questions[3].fit_score = 0.9
+        self.s.questions[0].fit_score = 0.7
+        self.assertEqual(self.s.next_item()[1], "order")  # margin too small
+        self.s.questions[0].fit_score = 0.2
+        item, by = self.s.next_item()
+        self.assertEqual((item.number, by), (4, "jev"))
+
+    def test_ai_pick_wins(self):
+        self.s.questions[3].fit_score = 0.95
+        self.s.next_override = "3"
+        self.assertEqual(self.s.next_item()[1], "ai")
+
+
 class OutputTests(unittest.TestCase):
     def test_results_nest_followups_and_keep_loose_ones_at_the_end(self):
         qs = parse_questions(SAMPLE)

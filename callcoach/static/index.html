@@ -203,7 +203,7 @@ function renderAskNext(s) {
   card.classList.toggle("followup", isFollow);
   $("asknext-kind").textContent = next.kind;
   $("asknext-text").textContent = next.text;
-  $("asknext-by").textContent = next.by === "ai" ? "Picked by AI" : next.by === "jev" ? "Best fit right now" : "Next in order";
+  $("asknext-by").textContent = next.by === "ai" ? "Picked by AI" : next.by === "jev" ? "They're already on this" : "Next in order";
   const parent = isFollow ? s.questions[Number(next.key.split(".")[0]) - 1] : null;
   $("asknext-parent").textContent = parent ? `Follows: ${parent.number}. ${parent.text}` : "";
   if (lastNextKey !== null && lastNextKey !== next.key) {

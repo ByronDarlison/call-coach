@@ -18,6 +18,7 @@ class Question:
     section: str | None = None
     answered: bool = False
     manual: bool = False  # a hand tick or untick that Jev must not override
+    asked: bool = False  # Jev heard the interviewer ask it
     answered_score: float = 0.0
     fit_score: float = 0.0
     high_passes: int = 0
@@ -35,6 +36,7 @@ class Followup:
     source: str  # "mcp" (an AI over MCP) or "you" (typed on the page)
     answered: bool = False
     asked_live: bool = False  # asked during the call without being on the list
+    asked: bool = False
     manual: bool = False
     answered_score: float = 0.0
     fit_score: float = 0.0

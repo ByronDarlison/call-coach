@@ -26,7 +26,8 @@ NEW_FILES = Path.home() / "Documents" / "Call Coach"  # where questions written 
 CONFIG_PATH = Path(os.environ.get("CALL_COACH_CONFIG", Path.home() / ".config" / "call-coach" / "config.json"))
 JEV_EVERY = 4.0
 JEV_WINDOW_LINES = 40
-FIT_MINIMUM = 0.3
+JUMP_FIT = 0.85  # Jev may jump ahead of list order only when a later question fits this well...
+JUMP_MARGIN = 0.3  # ...and fits this much better than the next question in order
 OFF_LIST_THRESHOLD = 0.6  # tested: real questions 0.97 to 0.98, "Okay, great" 0.12
 FOLLOW_UP_THRESHOLD = 0.5  # tested on 47 demo answers: flags the 9 most revealing, routine ones score 0.13 to 0.47
 FOLLOW_UP_COOLDOWN = 2  # no flag if one of the interviewee's previous two answers was already flagged
@@ -73,17 +74,26 @@ class Session:
         raise RuntimeError(f"There is no question {key}.")
 
     def next_item(self):
+        """What to ask next: the AI's pick (including a follow-up it just added), else the next question in
+        list order, unless Jev has strong evidence the other person is already on a later question."""
         if self.next_override:
             try:
                 picked = self.find(self.next_override)
                 if not picked.answered:
-                    return picked
+                    return picked, "ai"
             except RuntimeError:
                 pass
             self.next_override = None
-        open_ = [i for i in self.items() if not i.answered and not getattr(i, "asked_live", False)]
-        best = max(open_, key=lambda i: i.fit_score, default=None)
-        return best if best and best.fit_score >= FIT_MINIMUM else None
+        in_order = next((q for q in self.questions if not q.answered and not q.asked), None)
+        if in_order is None:
+            return None, None
+        candidates = [i for i in self.items()
+                      if not i.answered and not i.asked and not getattr(i, "asked_live", False)]
+        best = max(candidates, key=lambda i: i.fit_score, default=None)
+        if best and best is not in_order and best.fit_score >= JUMP_FIT \
+                and best.fit_score - in_order.fit_score >= JUMP_MARGIN:
+            return best, "jev"
+        return in_order, "order"
 
     def describe(self, item) -> str:
         if isinstance(item, Question):
@@ -93,7 +103,7 @@ class Session:
         return "Added question"
 
     def snapshot(self) -> dict:
-        nxt = self.next_item()
+        nxt, picked_by = self.next_item()
         follow = lambda f: {"key": f.key, "text": f.text, "source": f.source, "answered": f.answered,
                             "asked_live": f.asked_live}
         return {
@@ -104,7 +114,7 @@ class Session:
             "status": self.status,
             "saved": self.saved,
             "next": {"key": nxt.key, "text": nxt.text, "kind": self.describe(nxt),
-                     "by": "ai" if nxt.key == self.next_override else "jev"} if nxt else None,
+                     "by": picked_by} if nxt else None,
             "notices": self.notices,
             "questions": [
                 {
@@ -166,6 +176,10 @@ async def review_line(line: dict) -> None:
             if is_question >= OFF_LIST_THRESHOLD:
                 if key:
                     line["asked"] = key
+                    try:
+                        session.find(key).asked = True
+                    except RuntimeError:
+                        pass
                 else:
                     add_followup(line["text"], None, "live", asked_live=True)
                     line["off_list"] = True
