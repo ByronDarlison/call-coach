@@ -23,8 +23,8 @@ from typing import Awaitable, Callable
 import httpx
 
 RATE = 16_000
-MIN_SPEECH_RMS = 0.004  # never treat anything quieter than this as speech
-NOISE_MULTIPLE = 3.0  # speech is this many times louder than the room's noise floor
+SPEECH_RMS = 0.005  # tested on a quiet MacBook mic: speech 0.008 to 0.02, room noise about 0.002
+MIN_SPEECH_SECONDS = 0.4  # shorter bursts are clicks and bumps, not words
 PAUSE_SECONDS = 1.0
 LEAD_IN_SECONDS = 1.0  # audio kept from before speech is detected, so soft starts are not cut
 MAX_SECONDS = 12.0
@@ -66,20 +66,17 @@ class StreamBuffer:
         self.last_partial = 0.0
         self.busy = False
         self.utterance = 0  # bumped at each finalize so a late partial cannot overwrite a final line
-        self.noise_floor = MIN_SPEECH_RMS / NOISE_MULTIPLE
+        self.speech_samples = 0
         self.recording = array("f") if os.environ.get("CALL_COACH_DEBUG_AUDIO") else None
 
     def add(self, chunk: array, now: float) -> None:
         self.samples.extend(chunk)
         if self.recording is not None:
             self.recording.extend(chunk)
-        level = _rms(chunk)
-        if level >= max(MIN_SPEECH_RMS, self.noise_floor * NOISE_MULTIPLE):
+        if _rms(chunk) >= SPEECH_RMS:
             self.has_speech = True
             self.last_speech = now
-        else:
-            # Follow the room's background level slowly, so a noisy mic is not heard as constant speech.
-            self.noise_floor = 0.95 * self.noise_floor + 0.05 * level
+            self.speech_samples += len(chunk)
         lead_in = int(RATE * LEAD_IN_SECONDS)
         if not self.has_speech and len(self.samples) > 2 * lead_in:
             del self.samples[: len(self.samples) - lead_in]
@@ -162,10 +159,11 @@ class Pipeline:
                 seconds = len(buf.samples) / RATE
                 paused = now - buf.last_speech >= PAUSE_SECONDS
                 if paused or seconds >= MAX_SECONDS:
-                    samples = buf.samples
-                    buf.samples, buf.has_speech = array("f"), False
+                    samples, enough = buf.samples, buf.speech_samples >= RATE * MIN_SPEECH_SECONDS
+                    buf.samples, buf.has_speech, buf.speech_samples = array("f"), False, 0
                     buf.utterance += 1
-                    asyncio.create_task(self._run(buf, samples, final=True))
+                    if enough:
+                        asyncio.create_task(self._run(buf, samples, final=True))
                 elif now - buf.last_partial >= PARTIAL_EVERY and seconds >= 1.0:
                     buf.last_partial = now
                     asyncio.create_task(self._run(buf, array("f", buf.samples), final=False))
