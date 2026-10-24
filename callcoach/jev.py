@@ -73,6 +73,32 @@ class JevClient:
                              float(answers.get(f"f{slug}", {}).get("noul", 0.0)))
         return out
 
+    async def _ask(self, state: str, questions: dict) -> dict:
+        resp = await self.client.post(self.url, headers=self.headers,
+                                      json={"model": self.model, "state": state, "questions": questions})
+        resp.raise_for_status()
+        return resp.json().get("answers", {})
+
+    async def which_question(self, line: str, items: list) -> tuple[float, str | None]:
+        """Is the interviewer's line a question, and which listed item is it (None = not on the list)?"""
+        criteria = {item.key.replace(".", "-"): item.text for item in items}
+        criteria["none"] = "None of these: a different question, or not a question"
+        answers = await self._ask(f"The interviewer just said: \"{line}\"", {
+            "is_q": {"type": "noul", "instructions": "The interviewer is asking the other person a question"},
+            "which": {"type": "choice", "criteria": criteria, "instructions":
+                      "Which listed question is the interviewer asking? Same meaning counts, even if worded differently."},
+        })
+        choice = answers.get("which", {}).get("choice", "none")
+        return float(answers.get("is_q", {}).get("noul", 0.0)), (None if choice == "none" else choice.replace("-", "."))
+
+    async def worth_follow_up(self, line: str) -> float:
+        """How strongly the interviewee's line invites a follow-up (a specific number, name or claim)."""
+        answers = await self._ask(f"The interviewee just said: \"{line}\"", {
+            "worth": {"type": "noul", "instructions":
+                      "This answer gives a specific number, name, or claim that would be worth a follow-up question"},
+        })
+        return float(answers.get("worth", {}).get("noul", 0.0))
+
     async def aclose(self) -> None:
         await self.client.aclose()
 

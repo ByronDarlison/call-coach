@@ -27,6 +27,8 @@ CONFIG_PATH = Path(os.environ.get("CALL_COACH_CONFIG", Path.home() / ".config" /
 JEV_EVERY = 4.0
 JEV_WINDOW_LINES = 40
 FIT_MINIMUM = 0.3
+OFF_LIST_THRESHOLD = 0.6  # tested: real questions 0.97 to 0.98, "Okay, great" 0.12
+FOLLOW_UP_THRESHOLD = 0.6  # tested: specific answers 0.74 to 0.88, vague ones 0.06 to 0.15
 
 
 class Session:
@@ -128,8 +130,8 @@ mcp = FastMCP(
     instructions=(
         "Call Coach runs a live interview checklist. You can run the whole call: load_questions_file, start_call, "
         "then loop wait_for_update with the returned cursor to follow what is said. Add follow-ups with "
-        "add_question (they go straight to the Ask next bar), steer with set_next_question, and record any "
-        "question the interviewer asks that is not on the list with add_question(already_asked=true). Jev ticks "
+        "add_question (they go straight to the Ask next bar), best when a Them line has worth_follow_up: true. "
+        "Steer with set_next_question. Off-list questions the interviewer asks are recorded automatically. Jev ticks "
         "answered questions automatically; mark_question overrides it. stop_call saves the transcript and results; "
         "list_saved_calls and read_saved_call read past calls back. Keep follow-ups short and specific."
     ),
@@ -143,13 +145,33 @@ async def on_line(speaker: str, text: str, final: bool) -> None:
     if final:
         session.partial.pop(speaker, None)
         if text:
-            session.lines.append({
-                "index": len(session.lines), "speaker": speaker, "text": text,
-                "clock": datetime.now().strftime("%H:%M:%S"),
-            })
+            line = {"index": len(session.lines), "speaker": speaker, "text": text,
+                    "clock": datetime.now().strftime("%H:%M:%S")}
+            await review_line(line)
+            session.lines.append(line)
     else:
         session.partial[speaker] = text
     await session.bump()
+
+
+async def review_line(line: dict) -> None:
+    """Ask Jev about each finished line: is the interviewer asking something off the list, and does the
+    interviewee's answer invite a follow-up? Off-list questions are recorded straight away."""
+    if not jev or not session.running:
+        return
+    try:
+        if line["speaker"] == "You":
+            is_question, key = await asyncio.wait_for(jev.which_question(line["text"], session.items()), 4)
+            if is_question >= OFF_LIST_THRESHOLD:
+                if key:
+                    line["asked"] = key
+                else:
+                    add_followup(line["text"], None, "live", asked_live=True)
+                    line["off_list"] = True
+        else:
+            line["worth_follow_up"] = await asyncio.wait_for(jev.worth_follow_up(line["text"]), 4) >= FOLLOW_UP_THRESHOLD
+    except Exception as exc:  # a missed check must never hold up the transcript
+        session.status = f"Jev check skipped: {exc}"
 
 
 async def jev_loop() -> None:
@@ -367,7 +389,9 @@ def add_followup(text: str, number, source: str, ask_next: bool = False, asked_l
         where = "as an off-list question you asked" if asked_live else "to Other questions"
     if ask_next and not asked_live:
         session.next_override = item.key
-    if source == "mcp":
+    if source == "live":
+        session.notice("Recorded an off-list question you asked")
+    elif source == "mcp":
         session.notice(f"{who} recorded an off-list question you asked" if asked_live else
                        f"{who} added a follow-up {where}" + (": ask it next" if ask_next else ""))
     return f"Added question {item.key} {where}."
