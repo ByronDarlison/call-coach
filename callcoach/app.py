@@ -184,7 +184,9 @@ async def stop_session() -> None:
 
 
 def choose_file() -> Path | None:
-    script = 'POSIX path of (choose file with prompt "Choose a questions file" of type {"md", "markdown", "txt"})'
+    script = ('POSIX path of (choose file with prompt "Choose a questions file" '
+              'of type {"net.daringfireball.markdown", "public.plain-text"} '
+              'default location (path to desktop folder))')
     result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
     path = result.stdout.strip()
     return Path(path) if result.returncode == 0 and path else None
