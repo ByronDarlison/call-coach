@@ -28,6 +28,7 @@ A live checklist for interviews and discovery calls. Load your questions from a 
 ## Requirements
 
 - macOS 15 or later on Apple silicon, with [Homebrew](https://brew.sh)
+- Apple's Command Line Tools, to build the audio helper: run `xcode-select --install` once (the installer tells you if they are missing)
 - Headphones (see Limitations)
 - A Jev API key from [console.typesafe.ai](https://console.typesafe.ai/keys), for automatic ticking
 - Optional: an AI assistant that supports MCP over HTTP, for follow-ups
@@ -38,9 +39,8 @@ A live checklist for interviews and discovery calls. Load your questions from a 
     cd call-coach
     ./scripts/install.sh
 
-The installer adds whisper.cpp, builds the capture helper, sets up Python, and downloads the Whisper model once (about 500 MB). Call Coach runs only when you start it:
+The installer adds whisper.cpp, builds the capture helper, sets up Python, downloads the Whisper model once (about 500 MB), and asks for your Jev key. It saves the key in `~/.config/call-coach/jev-key`, readable only by your account, so you never set it again; press Return to skip and tick by hand. Run the installer again any time to add the key. Call Coach runs only when you start it:
 
-    export TYPESAFE_API_KEY=...
     .venv/bin/call-coach
 
 Open <http://localhost:4800>. In Chrome you can install the page as an app (the install icon in the address bar) so it opens in its own window. Choose your questions file, pick your microphone, put on headphones and press Start. The first time, macOS asks for **Screen Recording** and **Microphone** permission for the app that started Call Coach (usually Terminal); allow both, restart Call Coach, and press Start again.
@@ -101,11 +101,11 @@ Cloud-hosted assistants (for example ChatGPT or claude.ai in a browser) cannot r
 Optional, in `~/.config/call-coach/config.json`:
 
     {
-      "jev": {"url": "https://api.typesafe.ai/v1/systemone", "api_key_env": "TYPESAFE_API_KEY"},
+      "jev": {"api_key_file": "~/.config/call-coach/jev-key"},
       "model": "~/Library/Application Support/call-coach/models/ggml-small.en.bin"
     }
 
-To keep the Jev key off your Mac, run a small proxy that holds it, point `jev.url` at the proxy, and set `"broker_secret_file"` to a file containing the proxy's caller secret; Call Coach sends it in an `x-broker-secret` header. `CALL_COACH_PORT` changes the port (default 4800).
+The installer writes this for you. A `TYPESAFE_API_KEY` environment variable, if set, takes priority. To keep the Jev key off your Mac, run a small proxy that holds it, point `jev.url` at the proxy, and set `"broker_secret_file"` to a file containing the proxy's caller secret; Call Coach sends it in an `x-broker-secret` header. `CALL_COACH_PORT` changes the port (default 4800).
 
 ## Limitations and plans
 

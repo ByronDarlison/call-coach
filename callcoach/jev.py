@@ -25,6 +25,7 @@ class JevClient:
 
     config["jev"] examples:
       {"url": "https://api.typesafe.ai/v1/systemone", "api_key_env": "TYPESAFE_API_KEY"}
+      {"api_key_file": "~/.config/call-coach/jev-key"}  (written by scripts/install.sh)
       {"url": "https://<broker>/v1/systemone", "broker_secret_file": "~/.config/call-coach/broker-secret"}
     """
 
@@ -37,8 +38,11 @@ class JevClient:
             self.headers["x-broker-secret"] = secret
         else:
             key = os.environ.get(config.get("api_key_env", "TYPESAFE_API_KEY"), "")
+            if not key and "api_key_file" in config:
+                key_file = Path(os.path.expanduser(config["api_key_file"]))
+                key = key_file.read_text().strip() if key_file.exists() else ""
             if not key:
-                raise RuntimeError("No Jev key: set TYPESAFE_API_KEY or configure a broker")
+                raise RuntimeError("No Jev key: run scripts/install.sh to save one, or set TYPESAFE_API_KEY")
             self.headers["Authorization"] = f"Bearer {key}"
         self.client = httpx.AsyncClient(timeout=15)
 
