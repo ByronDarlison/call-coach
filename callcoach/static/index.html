@@ -36,7 +36,6 @@
   h3 { font-size: 14px; margin: 18px 0 6px; color: var(--muted); }
   ol { list-style: none; padding: 0; margin: 0; }
   li.q { display: flex; gap: 10px; padding: 7px 8px; border-radius: 6px; align-items: flex-start; }
-  li.q.next { background: var(--accent-soft); outline: 1px solid var(--accent); }
   li.q.answered .text { color: var(--muted); text-decoration: line-through; }
   .num { color: var(--muted); min-width: 22px; text-align: right; }
   input[type=checkbox] { margin-top: 4px; width: 16px; height: 16px; accent-color: var(--done); }
@@ -80,7 +79,6 @@
   @keyframes toast { 0% { opacity: 0; transform: translateY(-6px); } 6% { opacity: 1; transform: none; }
                      85% { opacity: 1; } 100% { opacity: 0; } }
   .follow li.new { animation: flash 4s ease-out; border-radius: 4px; }
-  .follow li.next { background: #fef3c7; outline: 1px solid #d97706; border-radius: 4px; padding-left: 4px; }
   .tag.asknext { color: #b45309; font-weight: 600; }
   @keyframes flash { 0%, 40% { background: #fde68a; } 100% { background: transparent; } }
   @media (max-width: 760px) {
@@ -163,7 +161,7 @@ let userScrolledAt = 0;
 const questionPane = () => $("questions").parentElement;
 function followQuestions(s) {
   if (!s.running || Date.now() - userScrolledAt < 15000) return;
-  const target = $("questions").querySelector("li.next") || $("questions").querySelector("li.q:not(.answered)");
+  const target = $("questions").querySelector("li.q:not(.answered)");  // follow progress; the card shows the pick
   if (!target) return;
   const pane = questionPane();
   const top = target.offsetTop - pane.offsetTop - pane.clientHeight / 3;
