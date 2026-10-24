@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""A stand-in for the audio helper. FAKE_CAPTURE_MODE: ok (default), deny, die (exits after 2 s),
+silent_mic (stops sending microphone frames), no_frames (says capturing, then sends nothing)."""
+import json, os, struct, sys, threading, time
+
+mode = os.environ.get("FAKE_CAPTURE_MODE", "ok")
+if "--list-mics" in sys.argv:
+    print(json.dumps([{"id": "mic-1", "name": "Test mic", "default": True}]))
+    sys.exit(0)
+if "--list-apps" in sys.argv:
+    print(json.dumps([{"id": "us.zoom.xos", "name": "zoom.us"}]))
+    sys.exit(0)
+if "--check" in sys.argv:
+    print(json.dumps({"screen_recording": mode != "deny", "microphone": "allowed"}))
+    sys.exit(0)
+if mode == "deny":
+    print("cc-capture: could not start: The user declined TCCs for application, window, display capture",
+          file=sys.stderr, flush=True)
+    sys.exit(2)
+print("cc-capture: capturing", file=sys.stderr, flush=True)
+if mode == "no_frames":
+    time.sleep(60)
+    sys.exit(0)
+out = sys.stdout.buffer
+threading.Thread(target=lambda: (sys.stdin.read(), os._exit(0)), daemon=True).start()
+start = time.time()
+speech_until = float(os.environ.get("FAKE_SPEECH_SECONDS", "1.5"))
+while True:
+    t = time.time() - start
+    if mode == "die" and t > 2:
+        print("cc-capture: stopped: test", file=sys.stderr, flush=True)
+        sys.exit(1)
+    loud = 0.05 if 0.3 < t < 0.3 + speech_until else 0.0
+    samples = [loud if i % 2 else -loud for i in range(160)]
+    for tag in ("S", "M"):
+        if tag == "M" and mode == "silent_mic" and t > 1:
+            continue
+        level = samples if tag == "M" else [0.0] * 160
+        out.write(tag.encode() + struct.pack("<I", 160) + struct.pack("<160f", *level))
+    out.flush()
+    time.sleep(0.01)

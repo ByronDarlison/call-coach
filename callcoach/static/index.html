@@ -10,57 +10,65 @@
 <style>
   :root {
     --bg: #f7f7f5; --panel: #ffffff; --ink: #1f2933; --muted: #6b7280; --line: #e5e7eb;
-    --accent: #326ab6; --accent-soft: #e7f1fb; --done: #2f855a; --warn: #9a3412;
+    --accent: #326ab6; --accent-soft: #e7f1fb; --done: #2f855a; --warn: #9a3412; --warn-soft: #fff4e5;
+    --error: #b91c1c; --error-soft: #fdecec;
   }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #111418; --panel: #1a1f25; --ink: #e5e7eb; --muted: #9ca3af; --line: #2d333b;
-            --accent: #7aa7e6; --accent-soft: #1d2a3a; --done: #68d391; --warn: #fdba74; }
+            --accent: #7aa7e6; --accent-soft: #1d2a3a; --done: #68d391; --warn: #fdba74; --warn-soft: #2d2216;
+            --error: #fca5a5; --error-soft: #2d1616; }
   }
   * { box-sizing: border-box; }
   body { margin: 0; font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
          background: var(--bg); color: var(--ink); height: 100vh; display: flex; flex-direction: column; }
-  header { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line);
+  header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line);
            background: var(--panel); flex-wrap: wrap; }
   header h1 { font-size: 17px; margin: 0 8px 0 0; }
   button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
            border-radius: 6px; padding: 6px 14px; cursor: pointer; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.suggest { box-shadow: 0 0 0 3px #f59e0b; }
   button:disabled { opacity: .45; cursor: default; }
+  button.small { padding: 1px 8px; font-size: 12px; color: var(--muted); }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
   select { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
-           border-radius: 6px; padding: 5px 8px; max-width: 360px; }
-  #status { color: var(--muted); font-size: 13px; }
-  #status.error { color: var(--warn); }
-  .hint { font-size: 13px; color: var(--muted); }
+           border-radius: 6px; padding: 5px 8px; max-width: 300px; }
+  #bar { display: none; padding: 8px 16px; font-size: 14px; border-bottom: 1px solid var(--line); }
+  #bar.info { display: block; color: var(--muted); background: var(--panel); }
+  #bar.warn { display: block; color: var(--warn); background: var(--warn-soft); }
+  #bar.error { display: block; color: var(--error); background: var(--error-soft); font-weight: 600; }
+  #meta { font-size: 12.5px; color: var(--muted); margin-left: auto; text-align: right; }
+  #recording { display: none; color: var(--error); font-weight: 700; font-size: 12.5px; }
   main { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); min-height: 0; }
-  section { overflow-y: auto; padding: 16px; min-height: 0; }
+  section { overflow-y: auto; padding: 16px; min-height: 0; position: relative; }
   section + section { border-left: 1px solid var(--line); }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 10px; }
   h3 { font-size: 14px; margin: 18px 0 6px; color: var(--muted); }
-  ol { list-style: none; padding: 0; margin: 0; }
+  ol, ul { list-style: none; padding: 0; margin: 0; }
   li.q { display: flex; gap: 10px; padding: 7px 8px; border-radius: 6px; align-items: flex-start; }
-  li.q.answered .text { color: var(--muted); text-decoration: line-through; }
+  li.q.next, .follow li.next { background: var(--accent-soft); }
+  .answered > div > .text, .follow li.answered .text, .skipped .text { color: var(--muted); text-decoration: line-through; }
   .num { color: var(--muted); min-width: 22px; text-align: right; }
-  input[type=checkbox] { margin-top: 4px; width: 16px; height: 16px; accent-color: var(--done); }
+  input[type=checkbox] { margin-top: 4px; width: 16px; height: 16px; accent-color: var(--done); flex: none; }
   .tag { font-size: 11px; color: var(--accent); margin-left: 6px; }
-  .follow { margin: 4px 0 0 0; padding: 0; list-style: none; }
-  .follow li { display: flex; gap: 8px; font-size: 14px; padding: 3px 0; }
-  .follow li.answered span { color: var(--muted); text-decoration: line-through; }
-  form { display: flex; gap: 8px; margin-top: 16px; }
-  form input[type=text] { flex: 1; font: inherit; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px;
-                          background: var(--panel); color: var(--ink); }
-  form input[type=number] { width: 70px; font: inherit; padding: 6px; border: 1px solid var(--line); border-radius: 6px;
-                            background: var(--panel); color: var(--ink); }
+  .tag.partial { color: var(--warn); }
+  .tag.asknext { color: #b45309; font-weight: 600; }
+  .follow { margin: 4px 0 0 0; }
+  .follow li { display: flex; gap: 8px; font-size: 14px; padding: 3px 4px; border-radius: 4px; align-items: flex-start; }
+  .row-actions { margin-left: auto; padding-left: 8px; white-space: nowrap; }
   .line { margin: 0 0 10px; }
   .who { font-weight: 600; margin-right: 6px; }
   .who.Them { color: var(--accent); }
   .clock { color: var(--muted); font-size: 12px; margin-right: 6px; }
-  .partial { color: var(--muted); font-style: italic; }
+  .partial-line { color: var(--muted); font-style: italic; }
   .mark { display: inline-block; margin-left: 8px; padding: 0 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; }
   .mark.worth { background: #fef3c7; color: #92400e; }
   .mark.off { background: #ede9fe; color: #5b21b6; }
   .mark.asked { background: var(--accent-soft); color: var(--accent); }
-  .saved { font-size: 13px; color: var(--done); }
+  .mark.wrap { background: #e5e7eb; color: #374151; }
+  .mark.suspect { background: var(--error-soft); color: var(--error); }
   .empty { color: var(--muted); }
+  #live { position: sticky; bottom: 0; float: right; display: none; }
   #asknext { display: none; margin: 12px 16px 4px; padding: 14px 20px 16px; background: var(--panel);
              border: 1px solid var(--line); border-left: 6px solid var(--accent); border-radius: 10px;
              box-shadow: 0 2px 10px rgba(0,0,0,.06); }
@@ -75,14 +83,15 @@
                  color: var(--accent); font-weight: 600; }
   #asknext .text { font-size: 22px; line-height: 1.4; font-weight: 600; color: var(--ink); }
   #asknext .parent { font-size: 14px; color: var(--muted); margin-top: 6px; }
+  #asknext .actions { margin-top: 8px; display: flex; gap: 8px; }
   #toasts { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 10; }
   .toast { background: #1f2933; color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 14px;
            box-shadow: 0 6px 18px rgba(0,0,0,.25); animation: toast 6s forwards; }
   @keyframes toast { 0% { opacity: 0; transform: translateY(-6px); } 6% { opacity: 1; transform: none; }
                      85% { opacity: 1; } 100% { opacity: 0; } }
-  .follow li.new { animation: flash 4s ease-out; border-radius: 4px; }
-  .tag.asknext { color: #b45309; font-weight: 600; }
+  .follow li.new { animation: flash 4s ease-out; }
   @keyframes flash { 0%, 40% { background: #fde68a; } 100% { background: transparent; } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; } }
   @media (max-width: 760px) {
     main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
     section + section { border-left: 0; border-top: 1px solid var(--line); }
@@ -93,192 +102,280 @@
 <header>
   <h1 id="title">Call Coach</h1>
   <button id="choose">Choose questions…</button>
-  <select id="mic" title="Microphone"><option value="">Microphone: system default</option></select>
+  <select id="mic" aria-label="Microphone"><option value="">Microphone: system default</option></select>
+  <select id="app" aria-label="Call audio"><option value="">Call audio: all system sound</option></select>
   <button id="start" class="primary" disabled>Start</button>
   <button id="stop" disabled>Stop</button>
-  <span class="hint">Use headphones.</span>
-  <span id="status"></span>
+  <span id="recording" role="status"></span>
+  <span id="meta">Use headphones.</span>
 </header>
-<div id="asknext"><div class="meta"><span class="label">Ask next</span><span id="asknext-kind"></span><span class="by" id="asknext-by"></span></div>
-  <div class="text" id="asknext-text"></div><div class="parent" id="asknext-parent"></div></div>
-<div id="toasts"></div>
+<div id="bar" role="status" aria-live="polite"></div>
+<div id="asknext" aria-live="polite"><div class="meta"><span class="label">Ask next</span><span id="asknext-kind"></span><span class="by" id="asknext-by"></span></div>
+  <div class="text" id="asknext-text"></div><div class="parent" id="asknext-parent"></div>
+  <div class="actions"><button class="small" id="asknext-skip">Skip this question</button>
+    <button class="small" id="asknext-order" hidden>Back to list order</button></div></div>
+<div id="toasts" aria-live="polite"></div>
 <main>
-  <section>
+  <section id="question-pane" aria-label="Questions">
     <h2>Questions</h2>
     <div id="questions"><p class="empty">No questions loaded.</p></div>
-    <form id="add">
-      <input type="text" id="add-text" placeholder="Type a question to add to this call">
-      <input type="number" id="add-num" min="1" placeholder="Under #" title="Optional: the number of the question this follows up">
-      <button type="submit">Add</button>
-    </form>
   </section>
-  <section id="transcript-pane">
+  <section id="transcript-pane" aria-label="Transcript">
     <h2>Transcript</h2>
     <div id="transcript"><p class="empty">The transcript appears here once the call starts.</p></div>
+    <div id="partials"></div>
+    <button id="live" class="primary">Jump to live</button>
   </section>
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
-const esc = (s) => s.replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
-const post = (path, body) => fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
-                                          body: JSON.stringify(body || {})});
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+let state = null, signedIn = true, lastMessageAt = Date.now();
 
-function followHtml(f, s) {
-  const fresh = seenFollowups !== null && !seenFollowups.has(f.key);
-  const isNext = s.next && s.next.key === f.key;
-  const tags = (f.source === "mcp" ? '<span class="tag">from AI</span>' : "") +
-    (f.asked_live ? '<span class="tag">asked off-list</span>' : "") +
-    (isNext ? '<span class="tag asknext">ask next</span>' : "");
-  return `<li class="${f.answered ? "answered" : ""} ${fresh ? "new" : ""} ${isNext ? "next" : ""}">` +
-    `<input type="checkbox" data-key="${f.key}" ${f.answered ? "checked" : ""}><span>${esc(f.text)}</span>${tags}</li>`;
+async function post(path, body) {
+  try {
+    const resp = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json", "X-Call-Coach": "1"},
+                                    body: JSON.stringify(body || {})});
+    const data = await resp.json().catch(() => ({ok: false, error: `HTTP ${resp.status}`}));
+    if (!data.ok) showBar(data.error || "That did not work.", "error");
+    return data;
+  } catch (e) {
+    showBar("Call Coach is not reachable. Is it still running?", "error");
+    return {ok: false};
+  }
+}
+
+function showBar(text, severity) { const b = $("bar"); b.textContent = text; b.className = text ? severity : ""; }
+
+// ---------- questions ----------
+
+let seenFollowups = null, lastQuestionsJson = "";
+function itemRow(item, s, isFollow) {
+  const li = el("li", [isFollow ? "" : "q", item.status, s.next && s.next.key === item.key ? "next" : ""].join(" "));
+  if (isFollow && seenFollowups !== null && !seenFollowups.has(item.key)) li.classList.add("new");
+  if (!isFollow) li.appendChild(el("span", "num", String(item.number)));
+  const box = el("input"); box.type = "checkbox"; box.checked = item.answered; box.dataset.key = item.key;
+  box.setAttribute("aria-label", `Answered: ${item.key}. ${item.text}`);
+  li.appendChild(box);
+  const body = el("div"); body.style.flex = "1";
+  body.appendChild(el("span", "text", item.text));
+  const tags = [];
+  if (item.source === "ai") tags.push(["tag", "from AI"]);
+  if (item.asked_live) tags.push(["tag", "asked off-list"]);
+  if (item.skipped || item.status === "skipped") tags.push(["tag", "skipped" + (item.skip_reason ? `: ${item.skip_reason}` : "")]);
+  else if (item.partial) tags.push(["tag partial", "partly answered"]);
+  else if (item.asked && !item.answered) tags.push(["tag", "asked"]);
+  if (item.answered && item.decided_by) tags.push(["tag", `ticked by ${item.decided_by}`]);
+  if (s.next && s.next.key === item.key) tags.push(["tag asknext", "ask next"]);
+  for (const [cls, text] of tags) body.appendChild(el("span", cls, text));
+  if (!isFollow && item.followups.length) {
+    const ul = el("ul", "follow");
+    for (const f of item.followups) ul.appendChild(itemRow(f, s, true));
+    body.appendChild(ul);
+  }
+  li.appendChild(body);
+  const actions = el("span", "row-actions");
+  const skip = el("button", "small", item.status === "skipped" ? "Undo skip" : item.manual ? "Auto" : "Skip");
+  skip.dataset.key = item.key;
+  skip.dataset.action = item.status === "skipped" || item.manual ? "auto" : "skipped";
+  skip.setAttribute("aria-label", `${skip.textContent}: ${item.key}`);
+  actions.appendChild(skip);
+  li.appendChild(actions);
+  return li;
 }
 
 function renderQuestions(s) {
-  if (!s.questions.length) { $("questions").innerHTML = '<p class="empty">No questions loaded.</p>'; return; }
-  let html = "", section = null;
+  const json = JSON.stringify([s.questions, s.loose_followups, s.next && s.next.key]);
+  if (json === lastQuestionsJson) return;
+  lastQuestionsJson = json;
+  const active = document.activeElement;
+  const focused = active && active.dataset && active.dataset.key
+    ? `${active.tagName.toLowerCase()}[data-key="${CSS.escape(active.dataset.key)}"]` : null;
+  const host = $("questions");
+  host.replaceChildren();
+  if (!s.questions.length) { host.appendChild(el("p", "empty", "No questions loaded.")); return; }
+  let section, list = null;
   for (const q of s.questions) {
-    if (q.section && q.section !== section) {
-      if (section !== null || html) html += "</ol>";
-      section = q.section; html += `<h3>${esc(section)}</h3><ol>`;
-    } else if (!html) html += "<ol>";
-    const isNext = s.next && s.next.key === q.key;
-    const cls = ["q", q.answered ? "answered" : "", isNext ? "next" : ""].join(" ");
-    const follow = q.followups.map((f) => followHtml(f, s)).join("");
-    html += `<li class="${cls}"><span class="num">${q.number}</span>` +
-      `<input type="checkbox" data-key="${q.key}" ${q.answered ? "checked" : ""}>` +
-      `<div><span class="text">${esc(q.text)}</span>${isNext ? '<span class="tag">ask next</span>' : ""}` +
-      (follow ? `<ul class="follow">${follow}</ul>` : "") + "</div></li>";
+    if (!list || (q.section && q.section !== section)) {
+      if (q.section && q.section !== section) { section = q.section; host.appendChild(el("h3", null, section)); }
+      list = el("ol"); host.appendChild(list);
+    }
+    list.appendChild(itemRow(q, s, false));
   }
-  html += "</ol>";
   if (s.loose_followups.length) {
-    html += "<h3>Other questions</h3><ul class='follow'>" + s.loose_followups.map((f) => followHtml(f, s)).join("") + "</ul>";
+    host.appendChild(el("h3", null, "Other questions"));
+    const ul = el("ul", "follow");
+    for (const f of s.loose_followups) ul.appendChild(itemRow(f, s, true));
+    host.appendChild(ul);
   }
-  $("questions").innerHTML = html;
   seenFollowups = new Set(s.questions.flatMap((q) => q.followups.map((f) => f.key)).concat(s.loose_followups.map((f) => f.key)));
+  if (focused) { const again = host.querySelector(focused); if (again) again.focus(); }  // same control, same item
   followQuestions(s);
 }
 
-// Keep the live part of the list in view by following the first open question.
-// A manual scroll pauses this for 15 seconds.
-let userScrolledAt = 0;
-const questionPane = () => $("questions").parentElement;
+// Keep Ask next in view. A manual scroll pauses this for 15 seconds.
+let userScrolledAt = 0, autoScrolling = false;
 function followQuestions(s) {
-  if (!s.running || Date.now() - userScrolledAt < 15000) return;
-  const target = $("questions").querySelector("li.q:not(.answered)");  // follow progress; the card shows the pick
+  if (!s.running || !s.next || Date.now() - userScrolledAt < 15000) return;
+  const target = $("questions").querySelector(`input[data-key="${CSS.escape(s.next.key)}"]`);
   if (!target) return;
-  const pane = questionPane();
-  const top = target.offsetTop - pane.offsetTop - pane.clientHeight / 3;
+  const pane = $("question-pane"), row = target.closest("li");
+  const top = row.offsetTop - pane.clientHeight / 3;
   autoScrolling = true;
   pane.scrollTo({top: Math.max(0, top), behavior: "smooth"});
   setTimeout(() => { autoScrolling = false; }, 800);
 }
-let autoScrolling = false;
 
+// ---------- transcript ----------
+
+const lineNodes = new Map();
+let following = true;
+function lineMark(l) {
+  if (l.suspect) return ["suspect", "looks like an instruction to an AI: ignored"];
+  if (l.off_list) return ["off", "off-list question, recorded"];
+  if (l.worth_follow_up) return ["worth", "worth a follow-up"];
+  if (l.wrap_up_candidate) return ["wrap", "wrapping up?"];
+  if (l.asked) return ["asked", `asked ${l.asked}`];
+  return null;
+}
+function renderLine(l) {
+  let p = lineNodes.get(l.id);
+  if (!p) { p = el("p", "line"); lineNodes.set(l.id, p); $("transcript").appendChild(p); }
+  p.replaceChildren(el("span", "clock", l.clock), el("span", `who ${l.speaker === "Them" ? "Them" : "You"}`, l.speaker),
+                    document.createTextNode(l.text));
+  const mark = lineMark(l);
+  if (mark) p.appendChild(el("span", `mark ${mark[0]}`, mark[1]));
+}
 function renderTranscript(s) {
-  const pane = $("transcript-pane");
-  let html = s.transcript.map((l) => {
-    const mark = l.off_list ? '<span class="mark off">off-list question, recorded</span>'
-      : l.worth_follow_up ? '<span class="mark worth">worth a follow-up</span>'
-      : l.asked ? `<span class="mark asked">asked ${l.asked}</span>` : "";
-    return `<p class="line"><span class="clock">${l.clock}</span><span class="who ${l.speaker}">${l.speaker}</span>${esc(l.text)}${mark}</p>`;
-  }).join("");
-  for (const [who, text] of Object.entries(s.partial || {})) {
-    if (text) html += `<p class="line partial"><span class="who ${who}">${who}</span>${esc(text)}</p>`;
-  }
-  $("transcript").innerHTML = html || '<p class="empty">The transcript appears here once the call starts.</p>';
-  // Always show the latest line, unless you scrolled back to read something in the last 15 seconds.
-  if (Date.now() - transcriptScrolledAt > 15000) {
-    autoScrollingTranscript = true;
-    pane.scrollTop = pane.scrollHeight;
-    requestAnimationFrame(() => { autoScrollingTranscript = false; });
-  }
+  if (s.reset) { lineNodes.clear(); $("transcript").replaceChildren(); }
+  const empty = $("transcript").querySelector(".empty"); if (empty && s.lines.length) empty.remove();
+  for (const l of s.lines) renderLine(l);
+  if (!lineNodes.size && !$("transcript").children.length)
+    $("transcript").appendChild(el("p", "empty", "The transcript appears here once the call starts."));
+  const partials = $("partials"); partials.replaceChildren();
+  for (const [who, text] of Object.entries(s.partial || {}))
+    if (text) { const p = el("p", "line partial-line"); p.append(el("span", "who " + who, who), document.createTextNode(text)); partials.appendChild(p); }
+  if (following) { const pane = $("transcript-pane"); pane.scrollTop = pane.scrollHeight; }
 }
 
-let seenFollowups = null, seenNotice = null;
-let transcriptScrolledAt = 0, autoScrollingTranscript = false;
+// ---------- Ask next, notices, header ----------
 
 let lastNextKey = null;
 function renderAskNext(s) {
-  let next = s.next;
-  if (!next && s.running) {
-    const q = s.questions.find((x) => !x.answered);
-    if (q) next = {key: q.key, text: q.text, kind: `Question ${q.number}`, by: "order"};
-  }
-  const card = $("asknext");
-  card.classList.toggle("show", Boolean(next));
+  const next = s.next, card = $("asknext");
+  card.classList.toggle("show", Boolean(next) && s.state !== "saved");
   if (!next) { lastNextKey = null; return; }
-  const isFollow = next.key.includes(".");
-  card.classList.toggle("followup", isFollow);
+  card.classList.toggle("followup", next.key.includes(".") || next.key.startsWith("f"));
   $("asknext-kind").textContent = next.kind;
   $("asknext-text").textContent = next.text;
   $("asknext-by").textContent = next.by === "ai" ? "Picked by AI" : next.by === "jev" ? "They're already on this" : "Next in order";
-  const parent = isFollow ? s.questions[Number(next.key.split(".")[0]) - 1] : null;
-  $("asknext-parent").textContent = parent ? `Follows: ${parent.number}. ${parent.text}` : "";
-  if (lastNextKey !== null && lastNextKey !== next.key) {
-    card.classList.remove("pulse"); void card.offsetWidth; card.classList.add("pulse");
-  }
+  $("asknext-parent").textContent = next.parent ? `Follows: ${next.parent}` : "";
+  $("asknext-order").hidden = next.by !== "ai";
+  if (lastNextKey !== null && lastNextKey !== next.key) { card.classList.remove("pulse"); void card.offsetWidth; card.classList.add("pulse"); }
   lastNextKey = next.key;
 }
 
+let seenNotice = null;
 function renderNotices(s) {
-  const fresh = (s.notices || []).filter((n) => seenNotice !== null && n.id > seenNotice);
-  for (const n of fresh) {
-    const el = document.createElement("div");
-    el.className = "toast"; el.textContent = n.text;
-    $("toasts").appendChild(el);
-    setTimeout(() => el.remove(), 6200);
+  for (const n of (s.notices || []).filter((n) => seenNotice !== null && n.id > seenNotice)) {
+    const t = el("div", "toast", n.text); $("toasts").appendChild(t); setTimeout(() => t.remove(), 6200);
   }
   seenNotice = Math.max(seenNotice ?? 0, ...(s.notices || []).map((n) => n.id), 0);
 }
 
-function render(s) {
+function renderHeader(s) {
   $("title").textContent = s.title || "Call Coach";
-  $("start").disabled = s.running || !s.questions.length;
-  $("stop").disabled = !s.running;
-  $("choose").disabled = s.running;
-  $("mic").disabled = s.running;
-  const st = $("status");
-  st.textContent = s.status + (s.saved.length ? "  " + s.saved.map((p) => p.split("/").pop()).join(", ") : "");
-  st.className = /error|failed|missing|not found|No Jev/i.test(s.status) ? "error" : "";
-  renderAskNext(s);
-  renderNotices(s);
-  renderQuestions(s);
-  renderTranscript(s);
+  const busy = s.state === "starting" || s.state === "stopping";
+  $("start").disabled = s.running || busy || !s.questions.length || s.state === "save_failed";
+  $("stop").disabled = !(s.running || s.state === "save_failed");
+  $("stop").textContent = s.state === "save_failed" ? "Try saving again" : "Stop";
+  $("stop").classList.toggle("suggest", s.running && stopHint);
+  for (const id of ["choose", "mic", "app"]) $(id).disabled = s.running || busy;
+  let text = s.status;
+  if (s.state === "saved" && s.saved.length) text += "  " + s.saved.map((p) => p.split("/").pop()).join(", ");
+  showBar(text, s.severity || "info");
+  const parts = [];
+  if (s.usage) parts.push(`Jev: ${s.usage.requests} checks, ${s.usage.cost_complete === false ? "at least" : "about"} $${s.usage.estimated_cost_usd.toFixed(3)}`);
+  if (s.sends_text_to) parts.push(`Text checked by ${s.sends_text_to}`);
+  parts.push("Use headphones.");
+  $("meta").textContent = parts.join(" · ");
+  $("recording").style.display = s.recording_audio ? "inline" : "none";
+  $("recording").textContent = s.recording_audio ? `● Recording audio to ${s.recording_audio}` : "";
 }
 
-new EventSource("/events").onmessage = (e) => render(JSON.parse(e.data));
-questionPane().addEventListener("scroll", () => { if (!autoScrolling) userScrolledAt = Date.now(); });
+let stopHint = false;
+function render(s) {
+  if (s.reset || !state) state = s; else state = Object.assign(state, s);
+  if (s.lines && s.lines.some((l) => l.wrap_up_candidate)) stopHint = true;
+  if (s.reset) stopHint = false;
+  renderHeader(state); renderAskNext(state); renderNotices(state); renderQuestions(state); renderTranscript(s);
+}
+
+// ---------- connection ----------
+
+function connect() {
+  const source = new EventSource("/events");
+  source.onopen = () => { lastMessageAt = Date.now(); };
+  source.onmessage = (e) => { lastMessageAt = Date.now(); render(JSON.parse(e.data)); };
+  source.addEventListener("heartbeat", () => { lastMessageAt = Date.now(); });
+  source.onerror = async () => {
+    source.close();
+    const probe = await fetch("/api/devices").catch(() => null);
+    if (probe && probe.status === 401) {
+      signedIn = false;
+      showBar("This page is not signed in. Open Call Coach from its Desktop launcher, or run: call-coach open", "error");
+    } else showBar("Lost touch with Call Coach. Retrying…", "error");
+    setTimeout(connect, 3000);
+  };
+}
+setInterval(() => {
+  if (signedIn && Date.now() - lastMessageAt > 5000)
+    showBar("No updates from Call Coach for 5 seconds. It may have stopped: check its window.", "error");
+}, 1000);
+connect();
+
+$("question-pane").addEventListener("scroll", () => { if (!autoScrolling) userScrolledAt = Date.now(); });
 $("transcript-pane").addEventListener("scroll", () => {
   const pane = $("transcript-pane");
-  const atBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 8;
-  if (!autoScrollingTranscript) transcriptScrolledAt = atBottom ? 0 : Date.now();
+  following = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 12;
+  $("live").style.display = following ? "none" : "block";
 });
-async function loadMics() {
-  try {
-    const {mics, chosen} = await (await fetch("/api/mics")).json();
-    const def = mics.find((m) => m.default);
-    $("mic").innerHTML = `<option value="">Microphone: system default${def ? ` (${esc(def.name)})` : ""}</option>` +
-      mics.map((m) => `<option value="${esc(m.id)}" ${m.id === chosen ? "selected" : ""}>Microphone: ${esc(m.name)}</option>`).join("");
-  } catch (e) { /* the list is a convenience; the default still works */ }
+$("live").onclick = () => { following = true; const pane = $("transcript-pane"); pane.scrollTop = pane.scrollHeight; $("live").style.display = "none"; };
+
+async function loadDevices() {
+  const resp = await fetch("/api/devices").catch(() => null);
+  if (!resp || !resp.ok) return;
+  const {mics, mic, apps, app} = await resp.json();
+  const def = mics.find((m) => m.default);
+  const micSel = $("mic"); micSel.replaceChildren(new Option(`Microphone: system default${def ? ` (${def.name})` : ""}`, ""));
+  for (const m of mics) micSel.appendChild(new Option(`Microphone: ${m.name}`, m.id, false, m.id === mic));
+  const appSel = $("app"); appSel.replaceChildren(new Option("Call audio: all system sound", ""));
+  const likely = /zoom|teams|meet|webex|chrome|safari|arc|edge|firefox|facetime|slack|discord|whatsapp/i;
+  const sorted = [...apps.filter((a) => likely.test(a.name)), ...apps.filter((a) => !likely.test(a.name))];
+  if (app && !apps.some((a) => a.id === app)) appSel.appendChild(new Option(`Call audio: ${app} (not running)`, app, false, true));
+  for (const a of sorted) appSel.appendChild(new Option(`Call audio: ${a.name} only`, a.id, false, a.id === app));
 }
-loadMics();
-$("mic").addEventListener("focus", loadMics);
-$("mic").onchange = () => post("/api/mic", {id: $("mic").value});
+loadDevices();
+$("mic").addEventListener("focus", loadDevices);
+$("app").addEventListener("focus", loadDevices);
+$("mic").onchange = () => post("/api/device", {mic: $("mic").value});
+$("app").onchange = () => post("/api/device", {app: $("app").value});
 $("choose").onclick = () => post("/api/choose");
 $("start").onclick = () => post("/api/start");
 $("stop").onclick = () => post("/api/stop");
-$("questions").addEventListener("change", (e) => {
+$("asknext-skip").onclick = () => state && state.next && post("/api/set", {key: state.next.key, state: "skipped", reason: "skipped from Ask next"});
+$("asknext-order").onclick = () => post("/api/next");
+$("questions").addEventListener("change", async (e) => {
   const box = e.target;
   if (box.type !== "checkbox") return;
-  post("/api/toggle", {key: box.dataset.key});
+  const wanted = box.checked;
+  const result = await post("/api/set", {key: box.dataset.key, state: wanted ? "answered" : "open"});
+  if (!result.ok) { box.checked = !wanted; lastQuestionsJson = ""; }
 });
-$("add").onsubmit = (e) => {
-  e.preventDefault();
-  const text = $("add-text").value.trim();
-  if (!text) return;
-  post("/api/add", {text, number: $("add-num").value ? Number($("add-num").value) : null});
-  $("add-text").value = ""; $("add-num").value = "";
-};
+$("questions").addEventListener("click", (e) => {
+  const button = e.target.closest("button[data-action]");
+  if (button) post("/api/set", {key: button.dataset.key, state: button.dataset.action});
+});
 </script>
 </body>
 </html>

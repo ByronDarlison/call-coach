@@ -1,10 +1,10 @@
 [project]
 name = "call-coach"
-version = "0.1.0"
+version = "0.2.0"
 description = "Live interview checklist: local transcription, Jev checkmarks, MCP follow-ups."
 requires-python = ">=3.10"
 license = "MIT"
-dependencies = ["mcp>=1.10,<2"]
+dependencies = ["mcp>=1.10,<2", "httpx>=0.27", "starlette>=0.40", "uvicorn>=0.30"]
 
 [project.scripts]
 call-coach = "callcoach.app:main"
