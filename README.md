@@ -34,7 +34,7 @@ A live checklist for interviews and discovery calls. Load your questions from a 
 
 ## Install and run
 
-    git clone https://github.com/darlison/call-coach.git
+    git clone https://github.com/ByronDarlison/call-coach.git
     cd call-coach
     ./scripts/install.sh
 
