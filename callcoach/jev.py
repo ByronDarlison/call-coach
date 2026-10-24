@@ -92,10 +92,12 @@ class JevClient:
         return float(answers.get("is_q", {}).get("noul", 0.0)), (None if choice == "none" else choice.replace("-", "."))
 
     async def worth_follow_up(self, line: str) -> float:
-        """How strongly the interviewee's line invites a follow-up (a specific number, name or claim)."""
+        """How strongly the interviewee's line invites a follow-up: surprising or revealing, not routine detail."""
         answers = await self._ask(f"The interviewee just said: \"{line}\"", {
             "worth": {"type": "noul", "instructions":
-                      "This answer gives a specific number, name, or claim that would be worth a follow-up question"},
+                      "This answer contains something surprising, unusually revealing, or contradicting what was said "
+                      "before, that a sharp interviewer would stop and dig into right now. Routine facts and figures "
+                      "do not count."},
         })
         return float(answers.get("worth", {}).get("noul", 0.0))
 

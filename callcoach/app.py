@@ -28,7 +28,8 @@ JEV_EVERY = 4.0
 JEV_WINDOW_LINES = 40
 FIT_MINIMUM = 0.3
 OFF_LIST_THRESHOLD = 0.6  # tested: real questions 0.97 to 0.98, "Okay, great" 0.12
-FOLLOW_UP_THRESHOLD = 0.6  # tested: specific answers 0.74 to 0.88, vague ones 0.06 to 0.15
+FOLLOW_UP_THRESHOLD = 0.5  # tested on 47 demo answers: flags the 9 most revealing, routine ones score 0.13 to 0.47
+FOLLOW_UP_COOLDOWN = 2  # no flag if one of the interviewee's previous two answers was already flagged
 
 
 class Session:
@@ -169,7 +170,10 @@ async def review_line(line: dict) -> None:
                     add_followup(line["text"], None, "live", asked_live=True)
                     line["off_list"] = True
         else:
-            line["worth_follow_up"] = await asyncio.wait_for(jev.worth_follow_up(line["text"]), 4) >= FOLLOW_UP_THRESHOLD
+            recent = [l for l in session.lines if l["speaker"] == "Them"][-FOLLOW_UP_COOLDOWN:]
+            if not any(l.get("worth_follow_up") for l in recent):
+                score = await asyncio.wait_for(jev.worth_follow_up(line["text"]), 4)
+                line["worth_follow_up"] = score >= FOLLOW_UP_THRESHOLD
     except Exception as exc:  # a missed check must never hold up the transcript
         session.status = f"Jev check skipped: {exc}"
 
