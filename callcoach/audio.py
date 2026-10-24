@@ -83,8 +83,9 @@ class StreamBuffer:
 
 
 class Pipeline:
-    def __init__(self, capture_bin: Path, model: Path, emit: Emit, whisper_port: int = 8178):
+    def __init__(self, capture_bin: Path, model: Path, emit: Emit, whisper_port: int = 8178, mic_id: str | None = None):
         self.capture_bin = capture_bin
+        self.mic_id = mic_id
         self.model = model
         self.emit = emit
         self.port = whisper_port
@@ -107,7 +108,7 @@ class Pipeline:
         )
         await self._wait_for_whisper()
         self.capture = await asyncio.create_subprocess_exec(
-            str(self.capture_bin), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            str(self.capture_bin), *(["--mic", self.mic_id] if self.mic_id else []), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         self.tasks = [

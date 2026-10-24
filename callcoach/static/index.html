@@ -26,6 +26,8 @@
            border-radius: 6px; padding: 6px 14px; cursor: pointer; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button:disabled { opacity: .45; cursor: default; }
+  select { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+           border-radius: 6px; padding: 5px 8px; max-width: 360px; }
   #status { color: var(--muted); font-size: 13px; }
   #status.error { color: var(--warn); }
   .hint { font-size: 13px; color: var(--muted); }
@@ -91,6 +93,7 @@
 <header>
   <h1 id="title">Call Coach</h1>
   <button id="choose">Choose questions…</button>
+  <select id="mic" title="Microphone"><option value="">Microphone: system default</option></select>
   <button id="start" class="primary" disabled>Start</button>
   <button id="stop" disabled>Stop</button>
   <span class="hint">Use headphones.</span>
@@ -233,6 +236,7 @@ function render(s) {
   $("start").disabled = s.running || !s.questions.length;
   $("stop").disabled = !s.running;
   $("choose").disabled = s.running;
+  $("mic").disabled = s.running;
   const st = $("status");
   st.textContent = s.status + (s.saved.length ? "  " + s.saved.map((p) => p.split("/").pop()).join(", ") : "");
   st.className = /error|failed|missing|not found|No Jev/i.test(s.status) ? "error" : "";
@@ -249,6 +253,17 @@ $("transcript-pane").addEventListener("scroll", () => {
   const atBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 8;
   if (!autoScrollingTranscript) transcriptScrolledAt = atBottom ? 0 : Date.now();
 });
+async function loadMics() {
+  try {
+    const {mics, chosen} = await (await fetch("/api/mics")).json();
+    const def = mics.find((m) => m.default);
+    $("mic").innerHTML = `<option value="">Microphone: system default${def ? ` (${esc(def.name)})` : ""}</option>` +
+      mics.map((m) => `<option value="${esc(m.id)}" ${m.id === chosen ? "selected" : ""}>Microphone: ${esc(m.name)}</option>`).join("");
+  } catch (e) { /* the list is a convenience; the default still works */ }
+}
+loadMics();
+$("mic").addEventListener("focus", loadMics);
+$("mic").onchange = () => post("/api/mic", {id: $("mic").value});
 $("choose").onclick = () => post("/api/choose");
 $("start").onclick = () => post("/api/start");
 $("stop").onclick = () => post("/api/stop");

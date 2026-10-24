@@ -243,10 +243,11 @@ async def start_session() -> None:
     else:
         jev_note = ""
     pipeline = Pipeline(
-        capture_bin=Path(config.get("capture_bin", ROOT.parent / "bin" / "cc-capture")),
+        capture_bin=capture_bin(),
         model=Path(os.path.expanduser(config.get("model", SUPPORT / "models" / "ggml-small.en.bin"))),
         emit=on_line,
         whisper_port=int(os.environ.get("CALL_COACH_WHISPER_PORT", "8178")),
+        mic_id=load_settings().get("mic") or None,
     )
     await pipeline.start()
     session.running, session.started, session.saved = True, datetime.now(), []
@@ -278,6 +279,20 @@ async def stop_session() -> None:
                      "results": str(results_path)})
     CALLS_INDEX.parent.mkdir(parents=True, exist_ok=True)
     CALLS_INDEX.write_text(json.dumps(calls[:200], indent=1))
+
+
+SETTINGS = SUPPORT / "settings.json"  # remembered choices, such as the microphone
+
+
+def load_settings() -> dict:
+    try:
+        return json.loads(SETTINGS.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def capture_bin() -> Path:
+    return Path(config.get("capture_bin", ROOT.parent / "bin" / "cc-capture"))
 
 
 def choose_file() -> Path | None:
@@ -339,6 +354,31 @@ async def api_choose(_: Request) -> Response:
         path = await asyncio.to_thread(choose_file)
         if path:
             load_questions(path)
+    return await _action(run)
+
+
+@mcp.custom_route("/api/mics", methods=["GET"])
+async def api_mics(_: Request) -> Response:
+    """The microphones macOS knows about, and which one Call Coach will use."""
+    proc = await asyncio.create_subprocess_exec(str(capture_bin()), "--list-mics",
+                                                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    out, _ = await proc.communicate()
+    mics = json.loads(out or b"[]")
+    chosen = load_settings().get("mic")
+    if chosen not in {m["id"] for m in mics}:
+        chosen = None  # the remembered mic is unplugged: fall back to the system default
+    return JSONResponse({"mics": mics, "chosen": chosen})
+
+
+@mcp.custom_route("/api/mic", methods=["POST"])
+async def api_mic(request: Request) -> Response:
+    body = await request.json()
+
+    async def run():
+        settings = load_settings()
+        settings["mic"] = body.get("id") or None
+        SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+        SETTINGS.write_text(json.dumps(settings))
     return await _action(run)
 
 
