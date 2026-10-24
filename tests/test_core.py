@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime
 
 from callcoach.audio import _clean
-from callcoach.jev import apply_scores
+from callcoach.jev import apply_final_scores, apply_scores
 from callcoach.questions import Followup, parse_questions, render_results
 
 SAMPLE = """# Interview
@@ -54,6 +54,13 @@ class ScoreTests(unittest.TestCase):
         apply_scores([f], {"1.1": (0.9, 0)})
         apply_scores([f], {"1.1": (0.9, 0)})
         self.assertTrue(f.answered)
+
+    def test_one_confident_pass_ticks_at_stop(self):
+        qs = parse_questions(SAMPLE)
+        qs[0].asked = True
+        apply_final_scores(qs, {"1": (0.8, 0), "2": (0.8, 0)})
+        self.assertTrue(qs[0].answered)
+        self.assertFalse(qs[1].answered)  # never asked: still needs near-certain evidence
 
     def test_a_low_pass_resets_the_count(self):
         qs = parse_questions(SAMPLE)

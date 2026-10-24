@@ -15,7 +15,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
 from .audio import Pipeline
-from .jev import JevClient, apply_scores
+from .jev import JevClient, apply_final_scores, apply_scores
 from .questions import Followup, Question, output_paths, parse_questions, render_results, render_transcript
 
 ROOT = Path(__file__).resolve().parent
@@ -269,6 +269,13 @@ async def stop_session() -> None:
     if pipeline:
         await pipeline.stop()
     if jev:
+        # A last answer given just before Stop has had no time for the usual two passes.
+        open_ = [i for i in session.items() if not i.answered and not i.manual]
+        try:
+            apply_final_scores(open_, await asyncio.wait_for(
+                jev.score(session.lines[-JEV_WINDOW_LINES:], open_), 8))
+        except Exception as exc:
+            session.status = f"Final Jev check skipped: {exc}"
         await jev.aclose()
     pipeline = jev = jev_task = None
     assert session.questions_path and session.started

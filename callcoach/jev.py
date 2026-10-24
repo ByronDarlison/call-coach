@@ -132,3 +132,13 @@ def apply_scores(items: list, scores: dict[str, tuple[float, float]]) -> bool:
             item.answered = True
             changed = True
     return True if scores else changed
+
+
+def apply_final_scores(items: list, scores: dict[str, tuple[float, float]]) -> None:
+    """At Stop there is no second pass to wait for, so one confident score is enough to tick."""
+    for item in items:
+        if item.key not in scores or item.manual or item.answered:
+            continue
+        bar = ANSWERED_THRESHOLD if getattr(item, "asked", False) or getattr(item, "asked_live", False) else UNASKED_THRESHOLD
+        if scores[item.key][0] >= bar:
+            item.answered = True
