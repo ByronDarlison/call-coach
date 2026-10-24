@@ -26,6 +26,7 @@ NEW_FILES = Path.home() / "Documents" / "Call Coach"  # where questions written 
 CONFIG_PATH = Path(os.environ.get("CALL_COACH_CONFIG", Path.home() / ".config" / "call-coach" / "config.json"))
 JEV_EVERY = 4.0
 JEV_WINDOW_LINES = 40
+BATCH_LINES = 12  # wait_for_update returns after this many new lines even with nothing flagged
 JUMP_FIT = 0.85  # Jev may jump ahead of list order only when a later question fits this well...
 JUMP_MARGIN = 0.3  # ...and fits this much better than the next question in order
 OFF_LIST_THRESHOLD = 0.6  # tested: real questions 0.97 to 0.98, "Okay, great" 0.12
@@ -139,12 +140,14 @@ jev_task: asyncio.Task | None = None
 mcp = FastMCP(
     "call-coach",
     instructions=(
-        "Call Coach runs a live interview checklist. You can run the whole call: load_questions_file, start_call, "
-        "then loop wait_for_update with the returned cursor to follow what is said. Add follow-ups with "
-        "add_question (they go straight to the Ask next bar), best when a Them line has worth_follow_up: true. "
-        "Steer with set_next_question. Off-list questions the interviewer asks are recorded automatically. Jev ticks "
-        "answered questions automatically; mark_question overrides it. stop_call saves the transcript and results; "
-        "list_saved_calls and read_saved_call read past calls back. Keep follow-ups short and specific."
+        "Call Coach runs a live interview checklist; Jev ticks questions, keeps the list in order, records "
+        "off-list questions and flags answers worth a follow-up. Your job is follow-ups, so keep calls few: "
+        "load_questions_file and start_call if asked, then loop wait_for_update(cursor) with its default "
+        "wake_on='follow_up'. When a returned line has worth_follow_up: true, call add_question once with one "
+        "short follow-up (under 15 words) under the question it belongs to. Do not poll, do not call "
+        "set_next_question unless the interviewer asks you to steer, and fetch get_open_questions only when "
+        "needed. stop_call saves the transcript and results; list_saved_calls and read_saved_call read past "
+        "calls back. Use a small, fast model if you can."
     ),
     port=int(os.environ.get("CALL_COACH_PORT", "4800")),
 )
@@ -428,13 +431,33 @@ async def get_session() -> dict:
     return snap
 
 
+def _compact(line: dict) -> dict:
+    out = {"speaker": line["speaker"], "text": line["text"]}
+    for key in ("asked", "off_list", "worth_follow_up"):
+        if line.get(key):
+            out[key] = line[key]
+    return out
+
+
 @mcp.tool()
-async def wait_for_update(cursor: int, timeout_seconds: int = 60) -> dict:
-    """Block until new transcript lines exist after `cursor` (or the call stops, or the timeout passes).
-    Returns only the new lines, the questions still open, and the next cursor."""
-    deadline = asyncio.get_running_loop().time() + max(1, min(timeout_seconds, 300))
-    while len(session.lines) <= cursor and session.running:
-        remaining = deadline - asyncio.get_running_loop().time()
+async def wait_for_update(cursor: int, timeout_seconds: int = 120, wake_on: str = "follow_up") -> dict:
+    """Wait for the call to move on, then return only the transcript lines after `cursor` and the next cursor.
+    wake_on="follow_up" (default, cheapest) returns as soon as the other person says something Jev marks
+    worth_follow_up, after BATCH_LINES new lines, when the call stops, or at the timeout.
+    wake_on="line" returns on every new line. Use get_open_questions only when you need the list."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(1, min(timeout_seconds, 300))
+
+    def ready() -> bool:
+        new = session.lines[cursor:]
+        if not session.running:
+            return True
+        if wake_on == "line":
+            return bool(new)
+        return len(new) >= BATCH_LINES or any(l.get("worth_follow_up") for l in new)
+
+    while not ready():
+        remaining = deadline - loop.time()
         if remaining <= 0:
             break
         async with session.changed:
@@ -442,12 +465,14 @@ async def wait_for_update(cursor: int, timeout_seconds: int = 60) -> dict:
                 await asyncio.wait_for(session.changed.wait(), remaining)
             except asyncio.TimeoutError:
                 break
-    return {
-        "running": session.running,
-        "new_lines": session.lines[cursor:],
-        "cursor": len(session.lines),
-        "open_questions": [{"key": i.key, "text": i.text} for i in session.items() if not i.answered],
-    }
+    return {"running": session.running, "cursor": len(session.lines),
+            "new_lines": [_compact(l) for l in session.lines[cursor:]]}
+
+
+@mcp.tool()
+async def get_open_questions() -> list[dict]:
+    """The questions and follow-ups not yet answered, with their keys ("7", "7.1", "f1")."""
+    return [{"key": i.key, "text": i.text} for i in session.items() if not i.answered]
 
 
 @mcp.tool()
@@ -552,7 +577,10 @@ def main() -> None:
     config["dev"] = args.dev or config.get("dev", False)
     if args.questions:
         load_questions(args.questions.expanduser().resolve())
-    mcp.run(transport="streamable-http")
+    import uvicorn
+    # A short graceful timeout: open page connections (live updates) would otherwise hold up Ctrl-C.
+    uvicorn.run(mcp.streamable_http_app(), host="127.0.0.1", port=mcp.settings.port,
+                timeout_graceful_shutdown=2, log_level="warning")
 
 
 if __name__ == "__main__":

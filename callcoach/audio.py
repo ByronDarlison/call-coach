@@ -160,15 +160,17 @@ class Pipeline:
                 paused = now - buf.last_speech >= PAUSE_SECONDS
                 if paused or seconds >= MAX_SECONDS:
                     samples, enough = buf.samples, buf.speech_samples >= RATE * MIN_SPEECH_SECONDS
+                    speech_seconds = buf.speech_samples / RATE
                     buf.samples, buf.has_speech, buf.speech_samples = array("f"), False, 0
                     buf.utterance += 1
                     if enough:
-                        asyncio.create_task(self._run(buf, samples, final=True))
-                elif now - buf.last_partial >= PARTIAL_EVERY and seconds >= 1.0:
+                        asyncio.create_task(self._run(buf, samples, final=True, speech_seconds=speech_seconds))
+                elif (now - buf.last_partial >= PARTIAL_EVERY and seconds >= 1.0
+                      and buf.speech_samples >= RATE * MIN_SPEECH_SECONDS):
                     buf.last_partial = now
                     asyncio.create_task(self._run(buf, array("f", buf.samples), final=False))
 
-    async def _run(self, buf: StreamBuffer, samples: array, final: bool) -> None:
+    async def _run(self, buf: StreamBuffer, samples: array, final: bool, speech_seconds: float = 9.9) -> None:
         utterance = buf.utterance
         buf.busy = True
         try:
@@ -185,6 +187,8 @@ class Pipeline:
             buf.busy = False
         if not final and utterance != buf.utterance:
             return
+        if len(text.split()) <= 2 and speech_seconds < 1.0:
+            text = ""  # Whisper turns faint noise into "you" or "Thank you."; real short replies run longer
         if text or final:
             await self.emit(buf.speaker, text, final)
 
