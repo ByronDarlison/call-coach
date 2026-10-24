@@ -43,7 +43,7 @@ class Session:
         self.status = "Choose a questions file to begin."
         self.version = 0
         self.changed = asyncio.Condition()
-        self.next_override: int | None = None  # a question the AI picked to ask next
+        self.next_override: str | None = None  # key of the question or follow-up the AI picked to ask next
         self.notices: list[dict] = []  # short on-page notices, e.g. "Claude added a follow-up"
 
     def notice(self, text: str) -> None:
@@ -54,18 +54,45 @@ class Session:
             self.version += 1
             self.changed.notify_all()
 
-    def next_question(self) -> Question | None:
+    def items(self) -> list:
+        """Every question and follow-up, in page order."""
+        out = []
+        for q in self.questions:
+            out.append(q)
+            out.extend(q.followups)
+        return out + self.loose
+
+    def find(self, key) -> Question | Followup:
+        key = str(key).strip()
+        for item in self.items():
+            if item.key == key:
+                return item
+        raise RuntimeError(f"There is no question {key}.")
+
+    def next_item(self):
         if self.next_override:
-            picked = self.questions[self.next_override - 1]
-            if not picked.answered:
-                return picked
+            try:
+                picked = self.find(self.next_override)
+                if not picked.answered:
+                    return picked
+            except RuntimeError:
+                pass
             self.next_override = None
-        open_ = [q for q in self.questions if not q.answered]
-        best = max(open_, key=lambda q: q.fit_score, default=None)
+        open_ = [i for i in self.items() if not i.answered and not getattr(i, "asked_live", False)]
+        best = max(open_, key=lambda i: i.fit_score, default=None)
         return best if best and best.fit_score >= FIT_MINIMUM else None
 
+    def describe(self, item) -> str:
+        if isinstance(item, Question):
+            return f"Question {item.number}"
+        if "." in item.key:
+            return f"Follow-up to question {item.key.split('.')[0]}"
+        return "Added question"
+
     def snapshot(self) -> dict:
-        nxt = self.next_question()
+        nxt = self.next_item()
+        follow = lambda f: {"key": f.key, "text": f.text, "source": f.source, "answered": f.answered,
+                            "asked_live": f.asked_live}
         return {
             "version": self.version,
             "title": self.title,
@@ -73,18 +100,18 @@ class Session:
             "running": self.running,
             "status": self.status,
             "saved": self.saved,
-            "next": nxt.number if nxt else None,
-            "next_by": "ai" if nxt and nxt.number == self.next_override else ("jev" if nxt else None),
+            "next": {"key": nxt.key, "text": nxt.text, "kind": self.describe(nxt),
+                     "by": "ai" if nxt.key == self.next_override else "jev"} if nxt else None,
             "notices": self.notices,
             "questions": [
                 {
-                    "number": q.number, "text": q.text, "section": q.section, "answered": q.answered,
+                    "key": q.key, "number": q.number, "text": q.text, "section": q.section, "answered": q.answered,
                     "manual": q.manual, "answered_score": round(q.answered_score, 2), "fit_score": round(q.fit_score, 2),
-                    "followups": [{"text": f.text, "source": f.source, "answered": f.answered} for f in q.followups],
+                    "followups": [follow(f) for f in q.followups],
                 }
                 for q in self.questions
             ],
-            "loose_followups": [{"text": f.text, "source": f.source, "answered": f.answered} for f in self.loose],
+            "loose_followups": [follow(f) for f in self.loose],
             "transcript": self.lines,
             "partial": self.partial,
         }
@@ -99,10 +126,11 @@ jev_task: asyncio.Task | None = None
 mcp = FastMCP(
     "call-coach",
     instructions=(
-        "Call Coach runs a live interview checklist. You can run the whole call: load_questions, start_call, "
+        "Call Coach runs a live interview checklist. You can run the whole call: load_questions_file, start_call, "
         "then loop wait_for_update with the returned cursor to follow what is said. Add follow-ups with "
-        "add_question, steer the interviewer with set_next_question, and tick or untick with mark_question "
-        "(Jev also ticks answered questions automatically). stop_call saves the transcript and results; "
+        "add_question (they go straight to the Ask next bar), steer with set_next_question, and record any "
+        "question the interviewer asks that is not on the list with add_question(already_asked=true). Jev ticks "
+        "answered questions automatically; mark_question overrides it. stop_call saves the transcript and results; "
         "list_saved_calls and read_saved_call read past calls back. Keep follow-ups short and specific."
     ),
     port=int(os.environ.get("CALL_COACH_PORT", "4800")),
@@ -128,18 +156,18 @@ async def jev_loop() -> None:
     seen = -1
     while session.running:
         await asyncio.sleep(JEV_EVERY)
-        pending = any(q.high_passes and not q.answered and not q.manual for q in session.questions)
+        open_ = [i for i in session.items() if not i.answered and not i.manual]
+        pending = any(i.high_passes for i in open_)
         if not jev or (len(session.lines) == seen and not pending):
             continue
         seen = len(session.lines)
-        open_ = [q for q in session.questions if not q.answered and not q.manual]
         try:
             scores = await jev.score(session.lines[-JEV_WINDOW_LINES:], open_)
         except Exception as exc:  # keep the call going; show the problem on the page
             session.status = f"Jev error: {exc}"
             await session.bump()
             continue
-        if apply_scores(session.questions, scores):
+        if apply_scores(open_, scores):
             await session.bump()
 
 
@@ -284,12 +312,8 @@ async def api_toggle(request: Request) -> Response:
     body = await request.json()
 
     async def run():
-        q = session.questions[int(body["number"]) - 1]
-        if "followup" in body:
-            f = q.followups[int(body["followup"])]
-            f.answered = not f.answered
-        else:
-            q.answered, q.manual = not q.answered, True
+        item = session.find(body["key"])
+        item.answered, item.manual = not item.answered, True
     return await _action(run)
 
 
@@ -324,23 +348,29 @@ async def api_dev_load(request: Request) -> Response:
     return await _action(run)
 
 
-def add_followup(text: str, number, source: str) -> str:
+def add_followup(text: str, number, source: str, ask_next: bool = False, asked_live: bool = False) -> str:
     text = " ".join(text.split())
     if not text:
-        raise RuntimeError("A follow-up needs some text.")
-    followup = Followup(text=text, source=source)
+        raise RuntimeError("A question needs some text.")
+    who = "AI" if source == "mcp" else "You"
     if number:
         n = int(number)
         if not 1 <= n <= len(session.questions):
             raise RuntimeError(f"There is no question {n}.")
-        session.questions[n - 1].followups.append(followup)
-        if source == "mcp":
-            session.notice(f"AI added a follow-up under question {n}")
-        return f"Added under question {n}."
-    session.loose.append(followup)
+        parent = session.questions[n - 1]
+        item = Followup(key=f"{n}.{len(parent.followups) + 1}", text=text, source=source)
+        parent.followups.append(item)
+        where = f"under question {n}"
+    else:
+        item = Followup(key=f"f{len(session.loose) + 1}", text=text, source=source, asked_live=asked_live)
+        session.loose.append(item)
+        where = "as an off-list question you asked" if asked_live else "to Other questions"
+    if ask_next and not asked_live:
+        session.next_override = item.key
     if source == "mcp":
-        session.notice("AI added a follow-up question")
-    return "Added to Follow-ups."
+        session.notice(f"{who} recorded an off-list question you asked" if asked_live else
+                       f"{who} added a follow-up {where}" + (": ask it next" if ask_next else ""))
+    return f"Added question {item.key} {where}."
 
 
 # ---------- MCP tools ----------
@@ -372,7 +402,7 @@ async def wait_for_update(cursor: int, timeout_seconds: int = 60) -> dict:
         "running": session.running,
         "new_lines": session.lines[cursor:],
         "cursor": len(session.lines),
-        "open_questions": [{"number": q.number, "text": q.text} for q in session.questions if not q.answered],
+        "open_questions": [{"key": i.key, "text": i.text} for i in session.items() if not i.answered],
     }
 
 
@@ -413,34 +443,34 @@ async def stop_call() -> dict:
 
 
 @mcp.tool()
-async def add_question(text: str, under_question: int | None = None) -> str:
-    """Add a follow-up question to the page, under the numbered question it relates to, or on its own."""
-    message = add_followup(text, under_question, "mcp")
+async def add_question(text: str, under_question: int | None = None, ask_next: bool = True,
+                       already_asked: bool = False) -> str:
+    """Add a question to the page. Give under_question to make it a follow-up to that numbered question.
+    ask_next (default true) puts it in the Ask next bar straight away. Use already_asked=true to record a
+    question the interviewer asked that was not on the list; Jev then ticks it when it is answered."""
+    message = add_followup(text, under_question, "mcp", ask_next=ask_next, asked_live=already_asked)
     await session.bump()
     return message
 
 
 @mcp.tool()
-async def set_next_question(number: int) -> str:
-    """Show this open question in the page's Ask next bar, instead of Jev's pick."""
-    if not 1 <= number <= len(session.questions):
-        raise RuntimeError(f"There is no question {number}.")
-    if session.questions[number - 1].answered:
-        raise RuntimeError(f"Question {number} is already answered.")
-    session.next_override = number
+async def set_next_question(key: str) -> str:
+    """Show this open item in the Ask next bar: a question number like "7", or a follow-up key like "7.1"."""
+    item = session.find(key)
+    if item.answered:
+        raise RuntimeError(f"{key} is already answered.")
+    session.next_override = item.key
     await session.bump()
-    return f"Ask next: question {number}."
+    return f"Ask next: {item.key}."
 
 
 @mcp.tool()
-async def mark_question(number: int, answered: bool = True) -> str:
-    """Tick (or untick) a question. Jev will not change a question you have marked."""
-    if not 1 <= number <= len(session.questions):
-        raise RuntimeError(f"There is no question {number}.")
-    q = session.questions[number - 1]
-    q.answered, q.manual = answered, True
+async def mark_question(key: str, answered: bool = True) -> str:
+    """Tick (or untick) a question or follow-up by key ("7", "7.1", "f1"). Jev will not change it after."""
+    item = session.find(key)
+    item.answered, item.manual = answered, True
     await session.bump()
-    return f"Question {number} {'ticked' if answered else 'unticked'}."
+    return f"{item.key} {'ticked' if answered else 'unticked'}."
 
 
 @mcp.tool()

@@ -12,7 +12,6 @@ from pathlib import Path
 
 import httpx
 
-from .questions import Question
 
 ANSWERED_THRESHOLD = 0.5  # live tests: real answers scored 0.6 to 0.97, non-answers 0.01 to 0.12
 PASSES_TO_CHECK = 2
@@ -41,8 +40,9 @@ class JevClient:
             self.headers["Authorization"] = f"Bearer {key}"
         self.client = httpx.AsyncClient(timeout=15)
 
-    async def score(self, transcript_lines: list[dict], open_questions: list[Question]) -> dict[int, tuple[float, float]]:
-        if not open_questions or not transcript_lines:
+    async def score(self, transcript_lines: list[dict], items: list) -> dict[str, tuple[float, float]]:
+        """Score open items (questions and follow-ups, each with .key and .text): answered, and fit as next."""
+        if not items or not transcript_lines:
             return {}
         recent = "\n".join(f"{line['speaker']}: {line['text']}" for line in transcript_lines)[-STATE_CHAR_LIMIT:]
         state = (
@@ -50,15 +50,16 @@ class JevClient:
             "'Them' is the person being interviewed.\n\n" + recent
         )
         questions = {}
-        for q in open_questions:
-            questions[f"a{q.number}"] = {
+        for item in items:
+            slug = item.key.replace(".", "-")
+            questions[f"a{slug}"] = {
                 "type": "noul",
-                "instructions": f"Them has already given a real answer to this question: \"{q.text}\"",
+                "instructions": f"Them has already given a real answer to this question: \"{item.text}\"",
             }
-            questions[f"f{q.number}"] = {
+            questions[f"f{slug}"] = {
                 "type": "noul",
                 "instructions": (
-                    f"Given the last few things Them said, this would be a natural next question to ask now: \"{q.text}\""
+                    f"Given the last few things Them said, this would be a natural next question to ask now: \"{item.text}\""
                 ),
             }
         resp = await self.client.post(self.url, headers=self.headers,
@@ -66,28 +67,28 @@ class JevClient:
         resp.raise_for_status()
         answers = resp.json().get("answers", {})
         out = {}
-        for q in open_questions:
-            answered = float(answers.get(f"a{q.number}", {}).get("noul", 0.0))
-            fit = float(answers.get(f"f{q.number}", {}).get("noul", 0.0))
-            out[q.number] = (answered, fit)
+        for item in items:
+            slug = item.key.replace(".", "-")
+            out[item.key] = (float(answers.get(f"a{slug}", {}).get("noul", 0.0)),
+                             float(answers.get(f"f{slug}", {}).get("noul", 0.0)))
         return out
 
     async def aclose(self) -> None:
         await self.client.aclose()
 
 
-def apply_scores(questions: list[Question], scores: dict[int, tuple[float, float]]) -> bool:
-    """Update question state from one Jev pass. Returns True when anything visible changed."""
+def apply_scores(items: list, scores: dict[str, tuple[float, float]]) -> bool:
+    """Update questions and follow-ups from one Jev pass. Returns True when anything visible changed."""
     changed = False
-    for q in questions:
-        if q.number not in scores:
+    for item in items:
+        if item.key not in scores:
             continue
-        answered, fit = scores[q.number]
-        q.answered_score, q.fit_score = answered, fit
-        if q.manual or q.answered:
+        answered, fit = scores[item.key]
+        item.answered_score, item.fit_score = answered, fit
+        if item.manual or item.answered:
             continue
-        q.high_passes = q.high_passes + 1 if answered >= ANSWERED_THRESHOLD else 0
-        if q.high_passes >= PASSES_TO_CHECK:
-            q.answered = True
+        item.high_passes = item.high_passes + 1 if answered >= ANSWERED_THRESHOLD else 0
+        if item.high_passes >= PASSES_TO_CHECK:
+            item.answered = True
             changed = True
     return True if scores else changed

@@ -56,18 +56,28 @@
   .partial { color: var(--muted); font-style: italic; }
   .saved { font-size: 13px; color: var(--done); }
   .empty { color: var(--muted); }
-  #asknext { display: none; align-items: baseline; gap: 12px; padding: 12px 16px; background: var(--accent);
-             color: #fff; font-size: 18px; line-height: 1.35; }
-  #asknext.show { display: flex; }
-  #asknext .label { font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
-                    opacity: .85; white-space: nowrap; }
-  #asknext .by { font-size: 12px; opacity: .8; white-space: nowrap; margin-left: auto; }
-  #toasts { position: fixed; top: 116px; right: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 10; }
+  #asknext { display: none; margin: 12px 16px 4px; padding: 14px 20px 16px; background: var(--panel);
+             border: 1px solid var(--line); border-left: 6px solid var(--accent); border-radius: 10px;
+             box-shadow: 0 2px 10px rgba(0,0,0,.06); }
+  #asknext.show { display: block; }
+  #asknext.followup { border-left-color: #d97706; }
+  #asknext.pulse { animation: pulse 1.6s ease-out; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 6px rgba(50,106,182,.35); } 100% { box-shadow: 0 2px 10px rgba(0,0,0,.06); } }
+  #asknext .meta { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  #asknext .label { font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+  #asknext.followup .label { color: #b45309; }
+  #asknext .by { margin-left: auto; padding: 2px 10px; border-radius: 999px; background: var(--accent-soft);
+                 color: var(--accent); font-weight: 600; }
+  #asknext .text { font-size: 22px; line-height: 1.4; font-weight: 600; color: var(--ink); }
+  #asknext .parent { font-size: 14px; color: var(--muted); margin-top: 6px; }
+  #toasts { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 10; }
   .toast { background: #1f2933; color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 14px;
            box-shadow: 0 6px 18px rgba(0,0,0,.25); animation: toast 6s forwards; }
   @keyframes toast { 0% { opacity: 0; transform: translateY(-6px); } 6% { opacity: 1; transform: none; }
                      85% { opacity: 1; } 100% { opacity: 0; } }
   .follow li.new { animation: flash 4s ease-out; border-radius: 4px; }
+  .follow li.next { background: #fef3c7; outline: 1px solid #d97706; border-radius: 4px; padding-left: 4px; }
+  .tag.asknext { color: #b45309; font-weight: 600; }
   @keyframes flash { 0%, 40% { background: #fde68a; } 100% { background: transparent; } }
   @media (max-width: 760px) {
     main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
@@ -84,7 +94,8 @@
   <span class="hint">Use headphones.</span>
   <span id="status"></span>
 </header>
-<div id="asknext"><span class="label">Ask next</span><span id="asknext-text"></span><span class="by" id="asknext-by"></span></div>
+<div id="asknext"><div class="meta"><span class="label">Ask next</span><span id="asknext-kind"></span><span class="by" id="asknext-by"></span></div>
+  <div class="text" id="asknext-text"></div><div class="parent" id="asknext-parent"></div></div>
 <div id="toasts"></div>
 <main>
   <section>
@@ -107,6 +118,16 @@ const esc = (s) => s.replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">":
 const post = (path, body) => fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
                                           body: JSON.stringify(body || {})});
 
+function followHtml(f, s) {
+  const fresh = seenFollowups !== null && !seenFollowups.has(f.key);
+  const isNext = s.next && s.next.key === f.key;
+  const tags = (f.source === "mcp" ? '<span class="tag">from AI</span>' : "") +
+    (f.asked_live ? '<span class="tag">asked off-list</span>' : "") +
+    (isNext ? '<span class="tag asknext">ask next</span>' : "");
+  return `<li class="${f.answered ? "answered" : ""} ${fresh ? "new" : ""} ${isNext ? "next" : ""}">` +
+    `<input type="checkbox" data-key="${f.key}" ${f.answered ? "checked" : ""}><span>${esc(f.text)}</span>${tags}</li>`;
+}
+
 function renderQuestions(s) {
   if (!s.questions.length) { $("questions").innerHTML = '<p class="empty">No questions loaded.</p>'; return; }
   let html = "", section = null;
@@ -115,24 +136,20 @@ function renderQuestions(s) {
       if (section !== null || html) html += "</ol>";
       section = q.section; html += `<h3>${esc(section)}</h3><ol>`;
     } else if (!html) html += "<ol>";
-    const cls = ["q", q.answered ? "answered" : "", s.next === q.number ? "next" : ""].join(" ");
-    const follow = q.followups.map((f, i) => {
-      const key = `${q.number}:${i}`, fresh = seenFollowups !== null && !seenFollowups.has(key);
-      return `<li class="${f.answered ? "answered" : ""} ${fresh ? "new" : ""}"><input type="checkbox" data-n="${q.number}" data-f="${i}" ${f.answered ? "checked" : ""}>` +
-        `<span>${esc(f.text)}</span>${f.source === "mcp" ? '<span class="tag">from AI</span>' : ""}</li>`;
-    }).join("");
+    const isNext = s.next && s.next.key === q.key;
+    const cls = ["q", q.answered ? "answered" : "", isNext ? "next" : ""].join(" ");
+    const follow = q.followups.map((f) => followHtml(f, s)).join("");
     html += `<li class="${cls}"><span class="num">${q.number}</span>` +
-      `<input type="checkbox" data-n="${q.number}" ${q.answered ? "checked" : ""}>` +
-      `<div><span class="text">${esc(q.text)}</span>${s.next === q.number ? '<span class="tag">ask next</span>' : ""}` +
+      `<input type="checkbox" data-key="${q.key}" ${q.answered ? "checked" : ""}>` +
+      `<div><span class="text">${esc(q.text)}</span>${isNext ? '<span class="tag">ask next</span>' : ""}` +
       (follow ? `<ul class="follow">${follow}</ul>` : "") + "</div></li>";
   }
   html += "</ol>";
   if (s.loose_followups.length) {
-    html += "<h3>Follow-ups</h3><ul class='follow'>" + s.loose_followups.map((f) =>
-      `<li><span>${esc(f.text)}</span>${f.source === "mcp" ? '<span class="tag">from AI</span>' : ""}</li>`).join("") + "</ul>";
+    html += "<h3>Other questions</h3><ul class='follow'>" + s.loose_followups.map((f) => followHtml(f, s)).join("") + "</ul>";
   }
   $("questions").innerHTML = html;
-  seenFollowups = new Set(s.questions.flatMap((q) => q.followups.map((_, i) => `${q.number}:${i}`)));
+  seenFollowups = new Set(s.questions.flatMap((q) => q.followups.map((f) => f.key)).concat(s.loose_followups.map((f) => f.key)));
   followQuestions(s);
 }
 
@@ -142,7 +159,7 @@ let userScrolledAt = 0;
 const questionPane = () => $("questions").parentElement;
 function followQuestions(s) {
   if (!s.running || Date.now() - userScrolledAt < 15000) return;
-  const target = $("questions").querySelector("li.q:not(.answered)");
+  const target = $("questions").querySelector("li.next") || $("questions").querySelector("li.q:not(.answered)");
   if (!target) return;
   const pane = questionPane();
   const top = target.offsetTop - pane.offsetTop - pane.clientHeight / 3;
@@ -166,12 +183,27 @@ function renderTranscript(s) {
 
 let seenFollowups = null, seenNotice = null;
 
+let lastNextKey = null;
 function renderAskNext(s) {
-  const q = s.next ? s.questions[s.next - 1] : (s.running ? s.questions.find((x) => !x.answered) : null);
-  $("asknext").classList.toggle("show", Boolean(q));
-  if (!q) return;
-  $("asknext-text").textContent = `${q.number}. ${q.text}`;
-  $("asknext-by").textContent = s.next_by === "ai" ? "picked by AI" : s.next_by === "jev" ? "best fit right now" : "next in order";
+  let next = s.next;
+  if (!next && s.running) {
+    const q = s.questions.find((x) => !x.answered);
+    if (q) next = {key: q.key, text: q.text, kind: `Question ${q.number}`, by: "order"};
+  }
+  const card = $("asknext");
+  card.classList.toggle("show", Boolean(next));
+  if (!next) { lastNextKey = null; return; }
+  const isFollow = next.key.includes(".");
+  card.classList.toggle("followup", isFollow);
+  $("asknext-kind").textContent = next.kind;
+  $("asknext-text").textContent = next.text;
+  $("asknext-by").textContent = next.by === "ai" ? "Picked by AI" : next.by === "jev" ? "Best fit right now" : "Next in order";
+  const parent = isFollow ? s.questions[Number(next.key.split(".")[0]) - 1] : null;
+  $("asknext-parent").textContent = parent ? `Follows: ${parent.number}. ${parent.text}` : "";
+  if (lastNextKey !== null && lastNextKey !== next.key) {
+    card.classList.remove("pulse"); void card.offsetWidth; card.classList.add("pulse");
+  }
+  lastNextKey = next.key;
 }
 
 function renderNotices(s) {
@@ -207,9 +239,7 @@ $("stop").onclick = () => post("/api/stop");
 $("questions").addEventListener("change", (e) => {
   const box = e.target;
   if (box.type !== "checkbox") return;
-  const body = {number: Number(box.dataset.n)};
-  if (box.dataset.f !== undefined) body.followup = Number(box.dataset.f);
-  post("/api/toggle", body);
+  post("/api/toggle", {key: box.dataset.key});
 });
 $("add").onsubmit = (e) => {
   e.preventDefault();

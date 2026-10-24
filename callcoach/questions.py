@@ -23,12 +23,22 @@ class Question:
     high_passes: int = 0
     followups: list["Followup"] = field(default_factory=list)
 
+    @property
+    def key(self) -> str:
+        return str(self.number)
+
 
 @dataclass
 class Followup:
+    key: str  # "4.1" = first follow-up under question 4; "f1" = first follow-up on its own
     text: str
-    source: str  # "mcp" or "you"
+    source: str  # "mcp" (an AI over MCP) or "you" (typed on the page)
     answered: bool = False
+    asked_live: bool = False  # asked during the call without being on the list
+    manual: bool = False
+    answered_score: float = 0.0
+    fit_score: float = 0.0
+    high_passes: int = 0
 
 
 def parse_questions(markdown: str) -> list[Question]:
@@ -65,9 +75,10 @@ def render_results(title: str, started: datetime, questions: list[Question], loo
         for f in q.followups:
             lines.append(f"    - [{'x' if f.answered else ' '}] {f.text} *(follow-up)*")
     if loose:
-        lines += ["", "## Follow-ups", ""]
+        lines += ["", "## Other questions", ""]
         for f in loose:
-            lines.append(f"- [{'x' if f.answered else ' '}] {f.text}")
+            tag = " *(asked off-list)*" if f.asked_live else ""
+            lines.append(f"- [{'x' if f.answered else ' '}] {f.text}{tag}")
     return "\n".join(lines).strip() + "\n"
 
 
