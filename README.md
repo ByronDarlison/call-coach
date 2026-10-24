@@ -109,9 +109,9 @@ The installer writes this for you. A `TYPESAFE_API_KEY` environment variable, if
 
 ## Limitations and plans
 
-- **Headphones are required.** Without them your microphone also hears the other person. Planned: echo filtering so speakers work.
+- **Headphones are required.** Without them your microphone also hears the other person. Planned: echo filtering so speakers work ([#2](https://github.com/ByronDarlison/call-coach/issues/2)).
 - **Mac only.** Windows and Linux need their own audio capture; the helper in `capture/` is the only part to replace.
-- **No native app yet.**
+- **No native app yet.** Planned scope: [#1](https://github.com/ByronDarlison/call-coach/issues/1).
 
 ## Development
 
