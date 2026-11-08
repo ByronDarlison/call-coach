@@ -12,6 +12,7 @@ FENCE = re.compile(r"^\s*(```|~~~)")
 MAX_FILE_BYTES = 256 * 1024
 MAX_QUESTIONS = 300
 MAX_QUESTION_CHARS = 600
+MAX_NOTE_CHARS = 2000  # per question: the notes and opening lines together
 
 
 @dataclass
@@ -73,6 +74,13 @@ class Question(Item):
     number: int = 0
     section: str | None = None
     followups: list["Followup"] = field(default_factory=list)
+    parts: list[str] = field(default_factory=list)  # the question, then each indented line, for display only
+    notes: list[str] = field(default_factory=list)  # indented code block under it: shown to you, never scored
+    intro: list[str] = field(default_factory=list)  # plain lines just before it: what to say first
+
+    def guide(self) -> dict:
+        """The display-only fields, which a reset must keep."""
+        return {"parts": list(self.parts), "notes": list(self.notes), "intro": list(self.intro)}
 
     @property
     def key(self) -> str:
@@ -104,14 +112,25 @@ class Questions:
 def parse_questions(markdown: str, fallback_title: str = "Questions") -> Questions:
     """Every top-level list item is a question; ## headings group them; a single # heading is the title.
     Indented list items and indented lines under a question are added to that question's text.
-    Anything inside a ``` code block is ignored."""
+    An indented ``` code block under a question holds notes for you: shown with the question when it is next,
+    never sent to Jev and never scored. Plain unindented lines just before a question (after its heading) are
+    shown above it, for example what to say first. Any other ``` code block is ignored."""
     questions: list[Question] = []
-    title, section, in_fence = None, None, False
+    title, section, in_fence, fence_owner, intro = None, None, False, None, []
     for line in markdown.splitlines():
-        if FENCE.match(line):
-            in_fence = not in_fence
+        fence = FENCE.match(line)
+        if fence:
+            if in_fence:
+                in_fence, fence_owner = False, None
+            else:
+                in_fence = True
+                indented = line[:1].isspace()
+                fence_owner = questions[-1] if indented and questions and not intro else None
             continue
         if in_fence:
+            note = re.sub(r"^\s*(?:[-*+]\s+)?", "", line).strip()
+            if fence_owner is not None and note:
+                fence_owner.notes.append(note)
             continue
         heading = HEADING.match(line)
         if heading:
@@ -119,16 +138,29 @@ def parse_questions(markdown: str, fallback_title: str = "Questions") -> Questio
                 title = heading.group(2)
             else:
                 section = heading.group(2)
+            intro = []
             continue
         item = LIST_ITEM.match(line)
         if item and not item.group(1):
-            questions.append(Question(text=item.group(2), number=len(questions) + 1, section=section))
+            text = item.group(2)
+            questions.append(Question(text=text, number=len(questions) + 1, section=section, parts=[text],
+                                      intro=intro))
+            intro = []
         elif questions and line.strip() and (item or line[:1].isspace()):
+            intro = []  # a plain line followed by more of the question was not an opening line
             extra = item.group(2) if item else line.strip()
             questions[-1].text += ("; " if item else " ") + extra
+            if item:
+                questions[-1].parts.append(extra)
+            else:
+                questions[-1].parts[-1] += " " + extra
+        elif line.strip() and not line[:1].isspace():
+            intro.append(line.strip())
     for q in questions:
         if len(q.text) > MAX_QUESTION_CHARS:
             raise ValueError(f"Question {q.number} is longer than {MAX_QUESTION_CHARS} characters.")
+        if sum(len(n) for n in q.notes + q.intro) > MAX_NOTE_CHARS:
+            raise ValueError(f"The notes for question {q.number} are longer than {MAX_NOTE_CHARS} characters.")
     if not questions:
         raise ValueError("No questions found: write each question as a list item (- or 1.).")
     if len(questions) > MAX_QUESTIONS:

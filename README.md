@@ -55,7 +55,7 @@ In Chrome you can install the page as an app (the install icon in the address ba
 
 ## Questions file
 
-A simple Markdown list works. Every top-level list item, numbered or bulleted, is a question; `##` headings group them; a single `#` heading is the title. Indented lines and sub-items are added to the question above them. Code blocks are ignored. Up to 256 KB.
+A simple Markdown list works. Every top-level list item, numbered or bulleted, is a question; `##` headings group them; a single `#` heading is the title. Indented lines and sub-items are added to the question above them, and the Ask next card shows each sub-item on its own line. An indented code block under a question holds notes for you (what to say if the answer is vague, options to read out): the Ask next card shows them with the question, and they are never sent to Jev or scored. Plain unindented lines just before a question, such as an opening line after a heading, show above it on the card. Other code blocks are ignored. Up to 256 KB.
 
     # Founder interview
 

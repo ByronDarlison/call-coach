@@ -257,7 +257,8 @@ class Session:
             "health": self.health, "saved": self.saved, "problems": self.problems,
             "next": {"key": nxt.key, "text": nxt.text, "kind": self.describe(nxt), "by": picked_by,
                      "parent": next((q.text for q in self.questions if any(nxt is f for f in q.followups)),
-                                    None)} if nxt else None,
+                                    None),
+                     **(nxt.guide() if isinstance(nxt, Question) else {})} if nxt else None,
             "notices": self.notices,
             "questions": [dict(self.item_view(q), number=q.number, section=q.section,
                                followups=[self.item_view(f) for f in q.followups]) for q in self.questions],
@@ -838,7 +839,7 @@ def reset_call() -> None:
     session.state = "idle"
     cache.clear()
     for q in session.questions:
-        fresh = Question(text=q.text, number=q.number, section=q.section)
+        fresh = Question(text=q.text, number=q.number, section=q.section, **q.guide())
         q.__dict__.update(fresh.__dict__)
 
 

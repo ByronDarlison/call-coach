@@ -499,3 +499,58 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+GUIDED = """# Discovery call
+
+## Goals
+
+Open with: "There are no wrong answers."
+
+1. "What do you want from the business?"
+    - Then: "Why does that matter?"
+    ```
+    If vague: "What would you see?"
+    - Option one
+    ```
+2. Second question?
+
+```
+- top-level block, still hidden
+```
+"""
+
+
+class GuideTests(unittest.TestCase):
+    def test_notes_parts_and_opening_lines_are_kept_apart_from_the_scored_text(self):
+        q1, q2 = parse_questions(GUIDED).questions
+        self.assertEqual(q1.text, '"What do you want from the business?"; Then: "Why does that matter?"')
+        self.assertEqual(q1.parts, ['"What do you want from the business?"', 'Then: "Why does that matter?"'])
+        self.assertEqual(q1.notes, ['If vague: "What would you see?"', "Option one"])
+        self.assertEqual(q1.intro, ['Open with: "There are no wrong answers."'])
+        self.assertEqual((q2.notes, q2.intro), ([], []))
+
+    def test_notes_never_reach_jev(self):
+        q1 = parse_questions(GUIDED).questions[0]
+        sent = json.dumps(JevClient._score_questions(q1, True))
+        self.assertNotIn("If vague", sent)
+        self.assertNotIn("no wrong answers", sent)
+
+    def test_ask_next_shows_the_guide_and_a_reset_keeps_it(self):
+        s = fresh_session()
+        s.questions = parse_questions(GUIDED).questions
+        nxt = s.snapshot(with_transcript=False)["next"]
+        self.assertEqual(nxt["notes"], ['If vague: "What would you see?"', "Option one"])
+        self.assertEqual(nxt["intro"], ['Open with: "There are no wrong answers."'])
+        self.assertEqual(len(nxt["parts"]), 2)
+        app.reset_call()
+        self.assertEqual(s.questions[0].notes, ['If vague: "What would you see?"', "Option one"])
+
+    def test_overlong_notes_are_rejected(self):
+        with self.assertRaises(ValueError):
+            parse_questions("## S\n\n1. Q?\n    ```\n    " + "x" * 2001 + "\n    ```\n")
+
+    def test_a_plain_line_inside_a_question_keeps_the_old_scored_text(self):
+        q1, q2 = parse_questions("1. Q1\nplain line\n  indented after\n  - sub\n2. Q2\n").questions
+        self.assertEqual(q1.text, "Q1 indented after; sub")
+        self.assertEqual(q2.intro, [])

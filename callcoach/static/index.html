@@ -83,6 +83,13 @@
                  color: var(--accent); font-weight: 600; }
   #asknext .text { font-size: 22px; line-height: 1.4; font-weight: 600; color: var(--ink); }
   #asknext .parent { font-size: 14px; color: var(--muted); margin-top: 6px; }
+  #asknext .intro { font-size: 15px; color: var(--muted); margin-bottom: 8px; }
+  #asknext .intro:empty, #asknext .then:empty, #asknext .notes:empty { display: none; }
+  #asknext .then { margin: 6px 0 0; padding: 0; list-style: none; }
+  #asknext .then li { font-size: 18px; line-height: 1.4; font-weight: 500; color: var(--ink); margin-top: 4px; }
+  #asknext .notes { margin: 10px 0 0; padding: 8px 12px; list-style: none; border-left: 3px solid #d97706;
+    background: var(--accent-soft); border-radius: 4px; }
+  #asknext .notes li { font-size: 14px; line-height: 1.45; font-style: italic; color: var(--ink); margin: 2px 0; }
   #asknext .actions { margin-top: 8px; display: flex; gap: 8px; }
   #toasts { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 10; }
   .toast { background: #1f2933; color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 14px;
@@ -111,7 +118,9 @@
 </header>
 <div id="bar" role="status" aria-live="polite"></div>
 <div id="asknext" aria-live="polite"><div class="meta"><span class="label">Ask next</span><span id="asknext-kind"></span><span class="by" id="asknext-by"></span></div>
-  <div class="text" id="asknext-text"></div><div class="parent" id="asknext-parent"></div>
+  <div class="intro" id="asknext-intro"></div>
+  <div class="text" id="asknext-text"></div><ul class="then" id="asknext-then"></ul>
+  <ul class="notes" id="asknext-notes" aria-label="Your notes"></ul><div class="parent" id="asknext-parent"></div>
   <div class="actions"><button class="small" id="asknext-skip">Skip this question</button>
     <button class="small" id="asknext-order" hidden>Back to list order</button></div></div>
 <div id="toasts" aria-live="polite"></div>
@@ -267,7 +276,11 @@ function renderAskNext(s) {
   if (!next) { lastNextKey = null; return; }
   card.classList.toggle("followup", next.key.includes(".") || next.key.startsWith("f"));
   $("asknext-kind").textContent = next.kind;
-  $("asknext-text").textContent = next.text;
+  const parts = next.parts && next.parts.length ? next.parts : [next.text];
+  $("asknext-text").textContent = parts[0];
+  $("asknext-intro").textContent = (next.intro || []).join(" ");
+  $("asknext-then").replaceChildren(...parts.slice(1).map(t => el("li", "", t)));
+  $("asknext-notes").replaceChildren(...(next.notes || []).map(t => el("li", "", t)));
   $("asknext-by").textContent = next.by === "ai" ? "Picked by AI" : next.by === "jev" ? "They're already on this" : "Next in order";
   $("asknext-parent").textContent = next.parent ? `Follows: ${next.parent}` : "";
   $("asknext-order").hidden = next.by !== "ai";
