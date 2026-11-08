@@ -163,7 +163,7 @@ A text replay cannot test pauses, short replies or real timing; those need recor
 
 The tests include stand-ins for the audio helper and whisper-server (`tests/fakes/`), so start, failure, stop and recovery are tested without a microphone. `--dev` (command line only) enables `POST /api/dev-start` (`{"path": "..."}`) to start a call without audio and `POST /api/dev-line` (`{"speaker": "You" | "Them", "text": "..."}`) to feed it turns, for replaying a transcript.
 
-GitHub Actions runs the same tests for every pull request and every push to `main` (`.github/workflows/tests.yml`).
+GitHub Actions runs the same tests on Linux for every pull request and every push to `main` (`.github/workflows/tests.yml`). macOS runners are left out until issue #9 is fixed.
 
 ## Licence
 
