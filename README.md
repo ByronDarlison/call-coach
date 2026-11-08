@@ -163,6 +163,8 @@ A text replay cannot test pauses, short replies or real timing; those need recor
 
 The tests include stand-ins for the audio helper and whisper-server (`tests/fakes/`), so start, failure, stop and recovery are tested without a microphone. `--dev` (command line only) enables `POST /api/dev-start` (`{"path": "..."}`) to start a call without audio and `POST /api/dev-line` (`{"speaker": "You" | "Them", "text": "..."}`) to feed it turns, for replaying a transcript.
 
+GitHub Actions runs the same tests on Linux for every pull request and every push to `main` (`.github/workflows/tests.yml`). macOS runners are left out until issue #9 is fixed.
+
 ## Licence
 
 MIT. Whisper and whisper.cpp are MIT-licensed; the model is downloaded from Hugging Face at install time, not shipped here. Jev is a commercial API used under TypeSafe's terms with your own key.

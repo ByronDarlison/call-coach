@@ -1,0 +1,28 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    # Linux: all tests pass in about a minute. GitHub's macOS runners time out three audio lifecycle
+    # tests that pass on a real Mac (see the issue linked in the README); add macos-latest back once fixed.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --quiet -r requirements.lock
+          .venv/bin/pip install --quiet --no-deps -e .
+      - name: Test
+        run: .venv/bin/python -m unittest discover -s tests -t .
