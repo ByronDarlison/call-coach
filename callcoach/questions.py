@@ -146,7 +146,8 @@ def parse_questions(markdown: str, fallback_title: str = "Questions") -> Questio
             questions.append(Question(text=text, number=len(questions) + 1, section=section, parts=[text],
                                       intro=intro))
             intro = []
-        elif questions and line.strip() and (item or line[:1].isspace()) and not intro:
+        elif questions and line.strip() and (item or line[:1].isspace()):
+            intro = []  # a plain line followed by more of the question was not an opening line
             extra = item.group(2) if item else line.strip()
             questions[-1].text += ("; " if item else " ") + extra
             if item:

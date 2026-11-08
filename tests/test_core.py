@@ -549,3 +549,8 @@ class GuideTests(unittest.TestCase):
     def test_overlong_notes_are_rejected(self):
         with self.assertRaises(ValueError):
             parse_questions("## S\n\n1. Q?\n    ```\n    " + "x" * 2001 + "\n    ```\n")
+
+    def test_a_plain_line_inside_a_question_keeps_the_old_scored_text(self):
+        q1, q2 = parse_questions("1. Q1\nplain line\n  indented after\n  - sub\n2. Q2\n").questions
+        self.assertEqual(q1.text, "Q1 indented after; sub")
+        self.assertEqual(q2.intro, [])
