@@ -247,6 +247,15 @@ class Session:
             view.update(source=item.source, asked_live=item.asked_live, from_line=item.from_line)
         return view
 
+    def current_view(self) -> dict | None:
+        """The listed question you asked most recently, while it is still open and has more for you
+        (its later lines or notes), so they stay in view after the Ask next card moves on."""
+        number = self.current_number
+        q = next((q for q in self.questions if q.number == number), None)
+        if q is None or q.status != "open" or not (q.notes or len(q.parts) > 1):
+            return None
+        return {"key": q.key, "number": q.number, "parts": list(q.parts), "notes": list(q.notes)}
+
     def snapshot(self, with_transcript: bool = True) -> dict:
         self.refresh_stretches()
         nxt, picked_by = self.next_item()
@@ -259,6 +268,7 @@ class Session:
                      "parent": next((q.text for q in self.questions if any(nxt is f for f in q.followups)),
                                     None),
                      **(nxt.guide() if isinstance(nxt, Question) else {})} if nxt else None,
+            "current": self.current_view(),
             "notices": self.notices,
             "questions": [dict(self.item_view(q), number=q.number, section=q.section,
                                followups=[self.item_view(f) for f in q.followups]) for q in self.questions],
