@@ -554,3 +554,15 @@ class GuideTests(unittest.TestCase):
         q1, q2 = parse_questions("1. Q1\nplain line\n  indented after\n  - sub\n2. Q2\n").questions
         self.assertEqual(q1.text, "Q1 indented after; sub")
         self.assertEqual(q2.intro, [])
+
+    def test_the_question_you_are_on_keeps_its_notes_in_view_until_answered(self):
+        s = fresh_session()
+        s.questions = parse_questions(GUIDED).questions
+        self.assertIsNone(s.snapshot(with_transcript=False)["current"])
+        s.asked.append(app.AskEvent(line=1, key="1", is_main=True))
+        s.questions[0].asked = True
+        cur = s.snapshot(with_transcript=False)["current"]
+        self.assertEqual(cur["number"], 1)
+        self.assertEqual(cur["notes"], ['If vague: "What would you see?"', "Option one"])
+        s.questions[0].decide("answered", "jev", 0.9)
+        self.assertIsNone(s.snapshot(with_transcript=False)["current"])

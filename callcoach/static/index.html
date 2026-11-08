@@ -83,6 +83,15 @@
                  color: var(--accent); font-weight: 600; }
   #asknext .text { font-size: 22px; line-height: 1.4; font-weight: 600; color: var(--ink); }
   #asknext .parent { font-size: 14px; color: var(--muted); margin-top: 6px; }
+  #onnow { margin: 12px 16px 0; padding: 10px 20px 12px; background: var(--panel); border-radius: 10px;
+    border-left: 5px solid #d97706; }
+  #onnow .meta { font-size: 13px; color: #b45309; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  #onnow .first { font-size: 15px; color: var(--muted); margin-top: 4px; }
+  #onnow .then { margin: 4px 0 0; padding: 0; list-style: none; }
+  #onnow .then li { font-size: 17px; font-weight: 500; color: var(--ink); margin-top: 3px; }
+  #onnow .notes { margin: 8px 0 0; padding: 6px 12px; list-style: none; background: var(--accent-soft); border-radius: 4px; }
+  #onnow .notes li { font-size: 14px; font-style: italic; color: var(--ink); margin: 2px 0; }
+  #onnow .then:empty, #onnow .notes:empty { display: none; }
   #asknext .intro { font-size: 15px; color: var(--muted); margin-bottom: 8px; }
   #asknext .intro:empty, #asknext .then:empty, #asknext .notes:empty { display: none; }
   #asknext .then { margin: 6px 0 0; padding: 0; list-style: none; }
@@ -117,6 +126,8 @@
   <span id="meta">Use headphones.</span>
 </header>
 <div id="bar" role="status" aria-live="polite"></div>
+<div id="onnow" hidden><div class="meta" id="onnow-label"></div><div class="first" id="onnow-first"></div>
+  <ul class="then" id="onnow-then"></ul><ul class="notes" id="onnow-notes" aria-label="Your notes"></ul></div>
 <div id="asknext" aria-live="polite"><div class="meta"><span class="label">Ask next</span><span id="asknext-kind"></span><span class="by" id="asknext-by"></span></div>
   <div class="intro" id="asknext-intro"></div>
   <div class="text" id="asknext-text"></div><ul class="then" id="asknext-then"></ul>
@@ -269,6 +280,16 @@ function renderTranscript(s) {
 
 // ---------- Ask next, notices, header ----------
 
+function renderOnNow(s) {
+  const cur = s.running ? s.current : null;
+  $("onnow").hidden = !cur;
+  if (!cur) return;
+  $("onnow-label").textContent = `Still open: question ${cur.number}`;
+  $("onnow-first").textContent = cur.parts[0] || "";
+  $("onnow-then").replaceChildren(...cur.parts.slice(1).map(t => el("li", "", t)));
+  $("onnow-notes").replaceChildren(...(cur.notes || []).map(t => el("li", "", t)));
+}
+
 let lastNextKey = null;
 function renderAskNext(s) {
   const next = s.next, card = $("asknext");
@@ -321,7 +342,7 @@ function render(s) {
   if (s.reset || !state) state = s; else state = Object.assign(state, s);
   if (s.lines && s.lines.some((l) => l.wrap_up_candidate)) stopHint = true;
   if (s.reset) stopHint = false;
-  renderHeader(state); renderAskNext(state); renderNotices(state); renderQuestions(state); renderTranscript(s);
+  renderHeader(state); renderOnNow(state); renderAskNext(state); renderNotices(state); renderQuestions(state); renderTranscript(s);
 }
 
 // ---------- connection ----------
