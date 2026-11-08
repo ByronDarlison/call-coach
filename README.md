@@ -159,11 +159,11 @@ A text replay cannot test pauses, short replies or real timing; those need recor
 ## Development
 
     .venv/bin/python -m unittest discover -s tests -t .
-
-GitHub Actions runs the same tests on macOS for every pull request and every push to `main` (`.github/workflows/tests.yml`).
     .venv/bin/call-coach --dev --questions examples/questions.md
 
 The tests include stand-ins for the audio helper and whisper-server (`tests/fakes/`), so start, failure, stop and recovery are tested without a microphone. `--dev` (command line only) enables `POST /api/dev-start` (`{"path": "..."}`) to start a call without audio and `POST /api/dev-line` (`{"speaker": "You" | "Them", "text": "..."}`) to feed it turns, for replaying a transcript.
+
+GitHub Actions runs the same tests for every pull request and every push to `main` (`.github/workflows/tests.yml`).
 
 ## Licence
 
