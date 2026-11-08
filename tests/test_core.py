@@ -566,3 +566,27 @@ class GuideTests(unittest.TestCase):
         self.assertEqual(cur["notes"], ['If vague: "What would you see?"', "Option one"])
         s.questions[0].decide("answered", "jev", 0.9)
         self.assertIsNone(s.snapshot(with_transcript=False)["current"])
+
+
+class StillOpenReplayTests(unittest.IsolatedAsyncioTestCase):
+    """The interviewer asks a listed question: Ask next moves on, and the question they are on keeps its later
+    lines and notes in view until it is ticked or skipped (found by replaying a real question list)."""
+
+    def setUp(self):
+        self.s = fresh_session()
+        self.s.questions = parse_questions(GUIDED).questions
+
+    async def asyncTearDown(self):
+        app.jev = None
+
+    async def test_asking_moves_ask_next_on_but_keeps_the_notes_in_view(self):
+        app.jev = FakeJev(interviewer=LineCheck(is_question=0.99, match="1", match_score=0.99, substantive=0.99))
+        self.s.lines = [line(0, "You", "What do you want from the business?")]
+        await app.review_line(self.s.lines[0])
+        snap = self.s.snapshot(with_transcript=False)
+        self.assertEqual(snap["next"]["key"], "2")
+        self.assertEqual(snap["current"]["number"], 1)
+        self.assertEqual(snap["current"]["parts"][1], 'Then: "Why does that matter?"')
+        self.assertIn('If vague: "What would you see?"', snap["current"]["notes"])
+        self.s.questions[0].decide("skipped", "you")
+        self.assertIsNone(self.s.snapshot(with_transcript=False)["current"])
