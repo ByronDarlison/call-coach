@@ -30,7 +30,9 @@ mkdir -p bin
 mkdir -p -m 700 "$SUPPORT" "$SUPPORT/models"
 swiftc -O -o bin/cc-capture capture/main.swift
 bin/cc-capture --list-mics >/dev/null || { echo "The audio helper built but does not run."; exit 1; }
-uv venv -q --allow-existing --python ">=3.10" .venv
+# Use the Python the tests run on: uv otherwise picks the newest, and the locked packages do not
+# build on a Python newer than they support (rpds-py failed on 3.15).
+uv venv -q --allow-existing --python 3.12 .venv
 uv pip sync -q -p .venv/bin/python requirements.lock
 uv pip install -q -p .venv/bin/python --no-deps -e .
 
