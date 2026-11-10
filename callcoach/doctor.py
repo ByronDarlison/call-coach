@@ -19,9 +19,20 @@ from pathlib import Path
 
 from . import store
 
-MODEL_SHA256 = {  # checked when installed; see scripts/install.sh
+DEFAULT_MODEL = "ggml-large-v3-turbo-q5_0.bin"  # see scripts/install.sh and README "Speech model"
+MODEL_SHA256 = {  # checked when installed; the Hugging Face file's SHA-256 (its Git LFS id)
+    "ggml-large-v3-turbo-q5_0.bin": "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+    "ggml-large-v3-turbo-q8_0.bin": "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1",
+    "ggml-large-v3-turbo.bin": "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
+    "ggml-medium.en-q5_0.bin": "76733e26ad8fe1c7a5bf7531a9d41917b2adc0f20f2e4f5531688a8c6cd88eb0",
+    "ggml-medium.en.bin": "cc37e93478338ec7700281a7ac30a10128929eb8f427dda2e865faa8f6da4356",
     "ggml-small.en.bin": "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
 }
+
+
+def model_path(config: dict) -> Path:
+    """The Whisper model to use: the "model" setting in the config, else the default."""
+    return Path(os.path.expanduser(config.get("model", store.SUPPORT / "models" / DEFAULT_MODEL)))
 
 
 def _line(ok: bool | None, text: str) -> None:
@@ -97,7 +108,7 @@ def run(config: dict, capture_bin: Path, settings: dict | None = None) -> int:
     whisper = shutil.which("whisper-server")
     _line(bool(whisper), f"whisper-server: {whisper or 'missing; run: brew install whisper-cpp'}")
     problems += not whisper
-    model = Path(os.path.expanduser(config.get("model", store.SUPPORT / "models" / "ggml-small.en.bin")))
+    model = model_path(config)
     if model.exists():
         expected = MODEL_SHA256.get(model.name)
         if expected:

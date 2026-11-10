@@ -27,7 +27,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         folder.mkdir(parents=True, exist_ok=True)
         self.questions = folder / "questions.md"
         self.questions.write_text(QUESTIONS)
-        model = store.SUPPORT / "models" / "ggml-small.en.bin"
+        model = store.SUPPORT / "models" / "ggml-large-v3-turbo-q5_0.bin"
         model.parent.mkdir(parents=True, exist_ok=True)
         model.write_bytes(b"fake")
         app.session = app.Session()

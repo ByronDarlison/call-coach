@@ -249,7 +249,7 @@ class Pipeline:
         if port_in_use(self.port):
             raise RuntimeError(f"Port {self.port} for whisper-server is already in use by another program.")
         self.whisper = await asyncio.create_subprocess_exec(
-            whisper_bin, "-m", str(self.model), "--host", "127.0.0.1", "--port", str(self.port), "-nt",
+            whisper_bin, "-m", str(self.model), "--host", "127.0.0.1", "--port", str(self.port), "-nt", "-l", "en",
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
         self.tasks.append(asyncio.create_task(self._drain_log(self.whisper.stderr, self.whisper_log)))
         deadline = time.monotonic() + WHISPER_READY_SECONDS

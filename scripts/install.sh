@@ -9,8 +9,11 @@ cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 SUPPORT="$HOME/Library/Application Support/call-coach"
 CONFIG_DIR="$HOME/.config/call-coach"
-MODEL="ggml-small.en.bin"
-MODEL_SHA256="c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d"
+# large-v3-turbo, 5-bit: far better than small.en on accented English and names, and still about
+# ten times faster than real time on an M-series Mac (README "Speech model"). Keep this in step with
+# DEFAULT_MODEL and MODEL_SHA256 in callcoach/doctor.py.
+MODEL="ggml-large-v3-turbo-q5_0.bin"
+MODEL_SHA256="394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
 MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$MODEL"  # can change, so the checksum is checked
 
 [ "$(uname)" = "Darwin" ] || { echo "Call Coach runs on macOS only."; exit 1; }
@@ -42,7 +45,7 @@ if [ -f "$SUPPORT/models/$MODEL" ] && ! model_ok "$SUPPORT/models/$MODEL"; then
   rm "$SUPPORT/models/$MODEL"
 fi
 if [ ! -f "$SUPPORT/models/$MODEL" ]; then
-  echo "Downloading Whisper model $MODEL (about 500 MB, once)..."
+  echo "Downloading Whisper model $MODEL (about 570 MB, once)..."
   curl -fL --progress-bar -o "$SUPPORT/models/$MODEL.part" "$MODEL_URL"
   model_ok "$SUPPORT/models/$MODEL.part" || { rm -f "$SUPPORT/models/$MODEL.part"; echo "Download failed its checksum."; exit 1; }
   mv "$SUPPORT/models/$MODEL.part" "$SUPPORT/models/$MODEL"

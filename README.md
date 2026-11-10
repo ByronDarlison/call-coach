@@ -17,9 +17,9 @@ A live checklist for interviews and discovery calls. Load your questions from a 
 1. **Capture.** A small Swift helper uses Apple's ScreenCaptureKit to record your microphone and the call's audio as two separate streams, so the transcript knows who said what: the microphone is **You**, the call is **Them**. You can capture one app's audio only (for example Zoom), so notifications and other apps are not mistaken for the other person. Choosing a browser captures all of that browser's tabs, so close other tabs that play sound.
 2. **Transcribe.** [whisper.cpp](https://github.com/ggml-org/whisper.cpp) runs on your Mac (tested with whisper.cpp 1.9.5 from Homebrew). Lines are kept in the order they were spoken, even when a short answer finishes transcribing before the question. Speech from the same person with less than three seconds' pause is joined into one turn, so a sentence split by a breath is checked as a whole.
 3. **Check.** [Jev](https://docs.typesafe.ai) by TypeSafe AI is a fast model that answers yes/no and multiple-choice questions about text. Once a turn is finished, Jev checks:
-    - **Your questions:** which listed question you asked (by meaning, using the turns before it; an unclear turn gets a second look against its three likeliest questions), or whether it is a substantive new question worth recording. Small talk and fragments stay in the transcript only.
+    - **Your questions:** which listed question you asked (by meaning, using the turns before it; an unclear turn gets a second look against its three likeliest questions), or whether it is a substantive new question worth recording. Before a question is recorded as new, it gets one more look as a re-ask: asking a listed question again in other words, asking one of its lines, or putting the answer back as a summary ("so what you learned is X, is that fair?"). A re-ask attaches to that question; if the question has not been asked yet, the talk from there counts as evidence for it and it stays on the Ask next card. Small talk and fragments stay in the transcript only.
     - **Their answers:** whether there is something worth a follow-up: a number, a big change, a surprising reason, a concrete story or a key detail left out.
-    - **Ticking:** each question you asked is scored against its own stretch of the call, from where you asked it until you moved on, so a long answer is never lost off the end of a window. "Answered" means the main point: a multi-part question can be ticked with a minor part missing, and an asked question with only some of an answer shows *partly answered*, which is a score, not a list of the missing parts. A question you have not asked yet needs near-certain evidence. At Stop, every open question is checked once more against all of its evidence.
+    - **Ticking:** each question you asked is scored against its own stretch of the call, from where you asked it until you moved on, so a long answer is never lost off the end of a window. "Answered" means the main point: a multi-part question can be ticked with a minor part missing. A question written on several lines (indented lines under it) also has each line scored on its own: it ticks once two thirds of its lines are answered, and shows *partly answered: 1 of 3 lines* before that. "I don't know yet" and "I'll get back to you" do not count as answers; a clear refusal does. A question you have not asked yet needs near-certain evidence. At Stop, every open question is checked once more against its own stretch and against the whole call, because answers often come before the question is asked; the lines of a question are combined across the whole call.
 4. **Follow up.** Call Coach is an MCP server. Your AI is woken only when an answer is flagged (or after a batch of lines) and may add one short follow-up, which goes to the Ask next card once the current pick has been asked.
 5. **Save.** The call is written to a private folder every few seconds while it runs, so a crash loses at most those few seconds plus any speech not yet transcribed; the call is finished and saved at the next start. Closing the launcher window stops Call Coach, saving a running call first. Press Stop and Call Coach transcribes what it already heard, runs the last checks, and writes the transcript and results next to your questions file under new names (it never replaces a file), plus a `results.json` recording who decided each item and on what evidence.
 
@@ -43,7 +43,7 @@ Without a Jev key, Call Coach still transcribes and you tick by hand.
     cd call-coach
     ./scripts/install.sh
 
-The installer adds whisper.cpp, builds the capture helper, installs the locked Python packages, downloads the Whisper model once (about 500 MB, checked against its checksum), asks for your Jev key and offers to put a **Call Coach** launcher on your Desktop. It saves the key in `~/.config/call-coach/jev-key`, readable only by your account; run `./scripts/install.sh --set-key` to change it. Call Coach runs only when you start it, never at login.
+The installer adds whisper.cpp, builds the capture helper, installs the locked Python packages, downloads the Whisper model once (about 570 MB, checked against its checksum; see Speech model), asks for your Jev key and offers to put a **Call Coach** launcher on your Desktop. It saves the key in `~/.config/call-coach/jev-key`, readable only by your account; run `./scripts/install.sh --set-key` to change it. Call Coach runs only when you start it, never at login.
 
 Double-click **Call Coach** on your Desktop (or run `.venv/bin/call-coach --open`). The page opens signed in. The first time, macOS asks for **Screen & System Audio Recording** and **Microphone** permission for **Terminal**, because Terminal runs the launcher: allow both, quit Terminal, and start again. Then check everything:
 
@@ -132,11 +132,23 @@ Optional, in `~/.config/call-coach/config.json`:
 
     {
       "jev": {"api_key_file": "~/.config/call-coach/jev-key"},
-      "model": "~/Library/Application Support/call-coach/models/ggml-small.en.bin",
+      "model": "~/Library/Application Support/call-coach/models/ggml-large-v3-turbo-q5_0.bin",
       "thresholds": {"answered": 0.5, "unasked": 0.9}
     }
 
 The installer writes the Jev part. A `TYPESAFE_API_KEY` environment variable, if set, takes priority. To keep the Jev key off your Mac, run a small broker that holds it, point `jev.url` at the broker, and set `"broker_secret_file"` to a file containing the broker's caller secret; Call Coach sends it in an `x-broker-secret` header. `thresholds` overrides any of the tuning values in `callcoach/jev.py` (`DEFAULTS`); each call's `results.json` records the values used. `CALL_COACH_PORT` changes the port (default 4800).
+
+## Speech model
+
+The default is whisper.cpp's large-v3-turbo, 5-bit (`ggml-large-v3-turbo-q5_0.bin`, about 570 MB). Before 10 Nov 2026 it was `ggml-small.en.bin`, which on a real call with a strongly accented speaker heard "31st of March" as "first of March" and garbled names. Measured on a Mac mini (M4 Pro) through whisper-server, the way Call Coach calls it, on 20 synthetic clips of about 10 seconds (five sentences adapted from the call, read in English by four macOS voices: US, Russian, German and Ukrainian; no recorded call audio was available):
+
+| Model | Median time per clip | Slowest | Word errors, US voice | Russian voice | German voice | Ukrainian voice |
+|---|---|---|---|---|---|---|
+| small.en | 0.21 s | 0.42 s | 10% | 10% | 38% | 50% |
+| medium.en, 5-bit | 0.53 s | 0.73 s | 8% | 10% | 37% | 38% |
+| large-v3-turbo, 5-bit | 0.63 s | 0.75 s | 8% | 10% | 21% | 37% |
+
+All three run more than ten times faster than real time. Synthetic voices are not real accents, so treat the error rates as a ranking, not a measure. To use another model, download it to `~/Library/Application Support/call-coach/models/` and set `"model"` in the config; `call-coach doctor` checks the files whose checksums it knows (`MODEL_SHA256` in `callcoach/doctor.py`).
 
 ## How the thresholds were set
 
@@ -146,6 +158,8 @@ The tuning values live in `callcoach/jev.py` (`DEFAULTS`); each call's `results.
 - **Answered, for a question not yet asked: 0.9.** Near-certain evidence, so a related answer cannot tick a later question early.
 - **Worth a follow-up: 0.85, one flag per answer.** On the replay, about three in four flags pointed at something specific (labelled by Claude, not by the interviewer). Flags only prompt the assistant, which decides whether to add a follow-up.
 - **Matching a listed question: 0.75 and 0.15 ahead of the runner-up**; an unclear turn gets a second look against its three likeliest questions at 0.6.
+- **Re-asks: 0.35 for the question being discussed, 0.5 for any other** (one yes/no per question). From a second real call (10 Nov 2026), over three runs: a summary put back as a check scored 0.45 to 0.47 for the question being discussed, and a re-ask of an earlier question 0.46 to 0.54, while the new questions asked in those stretches scored 0.02 to 0.17. Other listed questions scored up to 0.39 on the same turns, hence the higher bar for them. A single multiple-choice check could not separate them (0.40 against 0.39 for "none of these").
+- **A question written on several lines ticks at two thirds of its lines**, each over the same bar as the whole question. On that call, a three-line question answered across the call (some of it before it was asked) scored 0.25 as a whole but 0.50 and 0.58 on two of its lines.
 
 A text replay cannot test pauses, short replies or real timing; those need recorded audio. More labelled calls are needed before these numbers can be called calibrated.
 

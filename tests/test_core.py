@@ -138,7 +138,7 @@ class JevResponseTests(unittest.IsolatedAsyncioTestCase):
         jev = self.client(handler)
         qs = parse_questions(SAMPLE).questions[:2]
         scores = await jev.score([line(0, "Them", "x")], qs, with_fit=False)
-        self.assertEqual(scores, {"1": (None, None), "2": (None, None)})
+        self.assertEqual(scores, {"1": (None, None), "2": (None, None), "2/p0": (None, None), "2/p1": (None, None)})
         self.assertEqual(jev.usage()["input_tokens"], 100)
 
     async def test_a_choice_not_on_the_list_is_unknown_not_off_list(self):
@@ -293,6 +293,9 @@ class FakeJev:
 
     async def which_of(self, *args, **kwargs):
         return None, 0.0
+
+    async def restates(self, *args, **kwargs):
+        return {}
 
     def matching_groups(self, text, context, items, parents):
         return [items[i:i + 55] for i in range(0, len(items), 55)]

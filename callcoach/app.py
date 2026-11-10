@@ -41,7 +41,9 @@ from starlette.responses import FileResponse, JSONResponse, Response, StreamingR
 
 from . import security, store
 from .audio import Pipeline, Segment
-from .jev import MAX_CRITERIA, JevClient, apply_final_scores, apply_scores, thresholds, turns_json
+from .jev import (MAX_CRITERIA, JevClient, apply_final_scores, apply_scores, part_key, scored_parts, thresholds,
+                  turns_json)
+from .doctor import model_path
 from .questions import (MAX_FILE_BYTES, Followup, Item, Question, parse_questions, render_results,
                         render_transcript)
 
@@ -243,6 +245,8 @@ class Session:
                 "decided_by": item.decided_by, "answered_score": round(item.answered_score, 2),
                 "best_score": round(item.best_score, 2), "fit_score": round(item.fit_score, 2),
                 "skip_reason": item.skip_reason}
+        if isinstance(item, Question) and item.parts_total:
+            view.update(parts_answered=item.parts_answered, parts_total=item.parts_total)
         if isinstance(item, Followup):
             view.update(source=item.source, asked_live=item.asked_live, from_line=item.from_line)
         return view
@@ -553,7 +557,32 @@ async def classify_interviewer(line: dict):
         outcomes.append(check.match)
     # No group matched. Off the list only if every group clearly said "none of these".
     first.match = "unknown" if "unknown" in outcomes else "unclear" if "unclear" in outcomes else None
+    if first.match in (None, "unclear") and (first.is_question or 0) >= limits["question"]:
+        reask = await find_reask(line, context)
+        if reask:
+            first.match, first.match_score = reask
+            line["matched_as_reask"] = True
     return first
+
+
+REASK_CANDIDATES = 12
+
+
+async def find_reask(line: dict, context: list[dict]) -> tuple[str, float] | None:
+    """Before an interviewer's question goes on the list as a new one (or stays unplaced), check whether it
+    comes back to a listed question in other words, or puts the answer back as a check. Re-asks are worded
+    unlike the list, so the matching check often calls them a different question. The question being
+    discussed needs less (reask_current) than the others (reask). Returns (key, probability) or None."""
+    current = session.current_number
+    listed = sorted((q for q in session.questions if q.status != "skipped"),
+                    key=lambda q: (q.number != current, abs(q.number - current), q.number))[:REASK_CANDIDATES]
+    scores = await jev.restates(line["text"], context, listed)
+    passing = [(p, q.key) for q in listed if (p := scores.get(q.key)) is not None
+               and p >= limits["reask_current" if q.number == current else "reask"]]
+    if not passing:
+        return None
+    prob, key = max(passing)
+    return key, prob
 
 
 async def review_line(line: dict) -> None:
@@ -594,7 +623,14 @@ def apply_review(line: dict, check) -> None:
                 session.notice("It sounds like you are wrapping up. Press Stop when the call is over.")
         if not line["is_question"]:
             return
-        if check.match and check.match not in ("unclear", "unknown"):
+        if check.match and check.match not in ("unclear", "unknown") and line.get("matched_as_reask") \
+                and not session.find(check.match).asked:
+            # A line of a question not asked yet: count the talk from here as evidence for it, but leave it
+            # on the Ask next card, since the rest of it has still to be asked.
+            item = session.find(check.match)
+            item.early_line = line["id"] if item.early_line is None else min(item.early_line, line["id"])
+            line["early_for"] = check.match
+        elif check.match and check.match not in ("unclear", "unknown"):
             mark_asked(check.match, line)
         elif check.match == "unclear":
             line["asked_unclear"] = True
@@ -711,8 +747,10 @@ async def score_pass(now: float | None = None) -> bool:
             unasked = [i for i in unasked if i.status == "open" and not i.manual]
             for item in unasked:
                 answered = scores.get(item.key, (None, None))[0]
-                if answered is not None and answered >= limits["answered"] and item.early_line is None:
-                    item.early_line = window[0]["id"]  # earlier talk that may already answer it
+                lines_ = [scores.get(part_key(item.key, n), (None, None))[0] for n in range(len(scored_parts(item)))]
+                best = max([s for s in [answered, *lines_] if s is not None], default=None)
+                if best is not None and best >= limits["answered"] and item.early_line is None:
+                    item.early_line = window[0]["id"]  # earlier talk that may already answer it (or a line of it)
             changed |= decide(unasked, scores, {i.key: window_rev for i in unasked}, window)
     groups: dict[str, tuple[list[dict], list[Item]]] = {}
     for item in open_:
@@ -772,9 +810,11 @@ def chunks(lines: list[dict], limit: int = 11000) -> list[list[dict]]:
 
 
 async def final_scores() -> None:
-    """At Stop, revisit every open item: asked ones against their whole stretch, the rest against the
-    whole call, in overlapping chunks. One pass over the bar in any chunk is enough. (Coverage spread
-    across two chunks is not combined; a long stretch that only adds up across chunks stays partial.)"""
+    """At Stop, revisit every open item: asked ones against their whole stretch, and listed questions and
+    unasked items against the whole call too, since an answer often comes before the question is asked
+    (or after the interviewer has moved on). Both are read in overlapping chunks. One pass over the bar in
+    any chunk is enough. The lines of a question with several are combined across chunks; its main point
+    is not, so a long answer that only adds up across chunks stays partial unless its lines add up."""
     session.refresh_stretches()
     open_ = [i for i in session.items() if i.status == "open" and not i.manual]
     best: dict[str, tuple[float | None, None]] = {}
@@ -783,15 +823,17 @@ async def final_scores() -> None:
     def keep(scores: dict, part: list[dict]) -> None:
         for key, (answered, _) in scores.items():
             if answered is not None and (best.get(key, (None,))[0] or -1) < answered:
-                best[key], source[key] = (answered, None), [l["id"] for l in part]
+                best[key] = (answered, None)
+                if "/" not in key:
+                    source[key] = [l["id"] for l in part]
 
     for item in [i for i in open_ if i.asked_line is not None]:
         for part in chunks(evidence_lines(stretch_start(item), item.stretch_end)):
             keep(await jev.score(part, [item], with_fit=False, purpose="final"), part)
-    unasked = [i for i in open_ if i.asked_line is None]
-    if unasked:
+    whole_call = [i for i in open_ if i.asked_line is None or isinstance(i, Question)]
+    if whole_call:
         for part in chunks(evidence_lines(0, None)):
-            keep(await jev.score(part, unasked, with_fit=False, purpose="final"), part)
+            keep(await jev.score(part, whole_call, with_fit=False, purpose="final"), part)
     apply_final_scores(open_, best, limits)
     for item in open_:
         if item.status == "answered":
@@ -937,7 +979,7 @@ async def start_session() -> None:
             app_id = load_settings().get("app")
             pipeline = Pipeline(
                 capture_bin=capture_bin(),
-                model=Path(os.path.expanduser(config.get("model", store.SUPPORT / "models" / "ggml-small.en.bin"))),
+                model=model_path(config),
                 on_segment=lambda seg: on_segment(seg, call_id),
                 on_health=lambda c, s, m: on_health(c, s, m, call_id),
                 whisper_port=int(os.environ["CALL_COACH_WHISPER_PORT"]) if os.environ.get("CALL_COACH_WHISPER_PORT") else None,
@@ -1648,15 +1690,23 @@ async def mark_question(key: str, state: str = "answered", reason: str | None = 
 
 AUTOMATIC_MARKS = ("screened", "suspect", "injection", "is_question", "asked", "asked_unclear", "matched_on_retry",
                    "wrap_up_candidate", "off_list", "follow_up_score", "hook", "worth_follow_up",
-                   "follow_up_suppressed", "review_failed")
+                   "follow_up_suppressed", "review_failed", "matched_as_reask", "early_for")
 
 
 def invalidate(line: dict) -> None:
     """A turn's words changed: forget every automatic conclusion drawn from the old words (its checks,
     the questions it was taken to ask, an off-list item it created, and Jev's ticks that rested on it).
     Owner and AI decisions are kept."""
+    early_for = line.get("early_for")
     for key in AUTOMATIC_MARKS:
         line.pop(key, None)
+    if early_for:
+        try:
+            item = session.find(early_for)
+            if item.early_line == line["id"]:
+                item.early_line = None
+        except RuntimeError:
+            pass
     created = [f for f in session.loose if f.asked_live and f.asked_line == line["id"] and not f.manual]
     session.asked = [e for e in session.asked if e.line != line["id"]]
     for item in created:
@@ -1676,6 +1726,8 @@ def invalidate(line: dict) -> None:
             item.decision_lines = []
         if affected:
             item.high_passes, item.evidence_rev, item.scored_rev, item.pass_lines = 0, "", "", []
+            if isinstance(item, Question):
+                item.part_best, item.part_hits, item.part_revs, item.parts_answered = [], [], [], 0
     cache.clear()
 
 
