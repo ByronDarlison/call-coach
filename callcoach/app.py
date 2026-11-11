@@ -41,8 +41,8 @@ from starlette.responses import FileResponse, JSONResponse, Response, StreamingR
 
 from . import security, store
 from .audio import Pipeline, Segment
-from .jev import (MAX_CRITERIA, JevClient, answers_by_name, apply_final_scores, apply_scores, part_key, score_names,
-                  scored_parts, scores_from_names, thresholds, turns_json)
+from .jev import (MAX_CRITERIA, JevClient, answers_by_name, any_key, apply_final_scores, apply_scores, part_key,
+                  score_names, scored_parts, scores_from_names, thresholds, turns_json)
 from .doctor import model_path
 from .questions import (MAX_FILE_BYTES, Followup, Item, Question, parse_questions, render_results,
                         render_transcript)
@@ -73,6 +73,8 @@ FOLLOW_UP_COOLDOWN = 20.0  # seconds between follow-up flags, unless a later ans
 WRAP_NOTICE_EVERY = 60.0
 CHECKPOINT_EVERY = 5.0
 MAX_FOLLOWUP_CHARS, MAX_FOLLOWUP_WORDS = 200, 30
+FINAL_SECONDS = 240.0  # the Stop pass: a two-hour call needs well under a minute, but Jev can be slow
+FINAL_CONCURRENCY = 4  # Stop-pass requests in flight at once
 LIVE = ("starting", "listening")
 SEVERITY = {"ok": 0, None: 0, "off": 1, "degraded": 1, "failed": 2}  # Jev off stays visible all call
 
@@ -921,34 +923,65 @@ def chunks(lines: list[dict], limit: int = 11000) -> list[list[dict]]:
     return out + ([current] if current else [])
 
 
-async def final_scores() -> None:
+async def final_scores(timeout: float | None = None) -> str | None:
     """At Stop, revisit every open item: asked ones against their whole stretch, and listed questions and
     unasked items against the whole call too, since an answer often comes before the question is asked
-    (or after the interviewer has moved on). Both are read in overlapping chunks. One pass over the bar in
-    any chunk is enough. The lines of a question with several are combined across chunks; its main point
-    is not, so a long answer that only adds up across chunks stays partial unless its lines add up."""
+    (or after the interviewer has moved on, or under another question). Both are read in overlapping chunks,
+    a few requests at a time. One pass over the bar in any chunk is enough. The lines of a question with
+    several are combined across chunks; its main point is not, so a long answer that only adds up across
+    chunks stays partial unless its lines add up (or one of its asks is clearly answered, see
+    apply_final_scores).
+
+    Whatever came back is applied even when the pass is cut short by the timeout or by failed requests.
+    Returns None when every check got an answer, else a sentence for the call's problems."""
     session.refresh_stretches()
     open_ = [i for i in session.items() if i.status == "open" and not i.manual]
     best: dict[str, tuple[float | None, None]] = {}
     source: dict[str, list[int]] = {}
+    jobs: list[tuple[list[dict], list[Item]]] = []
+    for item in [i for i in open_ if i.asked_line is not None]:
+        jobs += [(part, [item]) for part in chunks(evidence_lines(stretch_start(item), item.stretch_end))]
+    whole_call = [i for i in open_ if i.asked_line is None or isinstance(i, Question)]
+    for part in chunks(evidence_lines(0, None)):
+        jobs += [(part, [item]) for item in whole_call]  # one item a request: its scores do not hang on the others
+    unanswered = 0
+    gate = asyncio.Semaphore(FINAL_CONCURRENCY)
 
-    def keep(scores: dict, part: list[dict]) -> None:
+    async def run(part: list[dict], items: list[Item]) -> None:
+        nonlocal unanswered
+        async with gate:
+            scores = await jev.score(part, items, with_fit=False, purpose="final", any_ask=True)
+        if any(v[0] is None for v in scores.values()):
+            unanswered += 1  # a failed request (or part of one): what did come back still counts
         for key, (answered, _) in scores.items():
             if answered is not None and (best.get(key, (None,))[0] or -1) < answered:
                 best[key], source[key] = (answered, None), [l["id"] for l in part]
 
-    for item in [i for i in open_ if i.asked_line is not None]:
-        for part in chunks(evidence_lines(stretch_start(item), item.stretch_end)):
-            keep(await jev.score(part, [item], with_fit=False, purpose="final"), part)
-    whole_call = [i for i in open_ if i.asked_line is None or isinstance(i, Question)]
-    if whole_call:
-        for part in chunks(evidence_lines(0, None)):
-            keep(await jev.score(part, whole_call, with_fit=False, purpose="final"), part)
-    apply_final_scores(open_, best, limits, source)
-    for item in open_:
-        if item.status == "answered":
-            # The whole question's best chunk, and every chunk a line score over the bar came from.
-            item.decision_lines = sorted(set(source.get(item.key, [])) | {i for p in part_lines(item) for i in p})
+    tasks_ = [asyncio.create_task(run(part, items)) for part, items in jobs]
+    late: set = set()
+    try:
+        if tasks_:
+            _, late = await asyncio.wait(tasks_, timeout=timeout)
+    finally:  # cut short (a timeout, or Stop itself cancelled): stop what is left, keep what came back
+        for t in tasks_:
+            t.cancel()
+        await asyncio.gather(*tasks_, return_exceptions=True)
+        apply_final_scores(open_, best, limits, source)
+        for item in open_:
+            if item.status == "answered":
+                # The whole question's best chunk, the chunk its "one of its asks" score came from, and every
+                # chunk a line score over the bar came from.
+                item.decision_lines = sorted(set(source.get(item.key, [])) | set(source.get(any_key(item.key), []))
+                                             | {i for p in part_lines(item) for i in p})
+    problems = []
+    if late:
+        problems.append(f"the time limit cut off {len(late)} of {len(jobs)} checks")
+    if unanswered:
+        problems.append(f"Jev gave no answer to {unanswered} of {len(jobs)} checks")
+    if problems:
+        return ("The last Jev check at Stop was incomplete (" + "; ".join(problems) + "): some answered "
+                "questions may still be open, so check them by hand.")
+    return None
 
 
 # ---------- loading questions ----------
@@ -1171,9 +1204,11 @@ async def _stop() -> None:
                         line["reviewed"] = True
             if jev:
                 try:
-                    await asyncio.wait_for(final_scores(), 60)
+                    problem = await final_scores(FINAL_SECONDS)
+                    if problem:
+                        session.problems.append(problem)
                 except Exception as exc:
-                    session.problems.append(f"Final Jev check skipped: {exc}")
+                    session.problems.append(f"Final Jev check failed: {type(exc).__name__}: {exc}")
                 session.usage = jev.usage()
         except Exception as exc:
             session.problems.append(f"Stop hit a problem: {exc}")
@@ -1890,7 +1925,9 @@ async def recheck_saved_call(changed: list[dict]) -> None:
         for line in changed:
             await review_line(line)
             line["reviewed"] = True
-        await final_scores()
+        problem = await final_scores(FINAL_SECONDS)
+        if problem and problem not in session.problems:
+            session.problems.append(problem)
         session.usage = merge_usage(session.usage, client.usage())
     finally:
         await client.aclose()
