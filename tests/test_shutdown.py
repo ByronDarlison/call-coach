@@ -20,7 +20,7 @@ class ShutdownTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="cc-shutdown-"))
         (self.tmp / "home" / "models").mkdir(parents=True)
-        (self.tmp / "home" / "models" / "ggml-small.en.bin").write_bytes(b"fake")
+        (self.tmp / "home" / "models" / "ggml-large-v3-turbo-q5_0.bin").write_bytes(b"fake")
         (self.tmp / "questions.md").write_text("- When did you start?\n- Who was first?\n")
         (self.tmp / "config.json").write_text(json.dumps({"capture_bin": str(FAKES / "cc-capture"),
                                                           "jev": {"api_key_env": "CC_NONE"}}))

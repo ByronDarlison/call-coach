@@ -183,7 +183,8 @@ function itemRow(item, s, isFollow) {
   if (item.source === "ai") tags.push(["tag", "from AI"]);
   if (item.asked_live) tags.push(["tag", "asked off-list"]);
   if (item.skipped || item.status === "skipped") tags.push(["tag", "skipped" + (item.skip_reason ? `: ${item.skip_reason}` : "")]);
-  else if (item.partial) tags.push(["tag partial", "partly answered"]);
+  else if (item.partial) tags.push(["tag partial", item.parts_answered && item.parts_total
+    ? `partly answered: ${item.parts_answered} of ${item.parts_total} lines` : "partly answered"]);
   else if (item.asked && !item.answered) tags.push(["tag", "asked"]);
   if (item.answered && item.decided_by) tags.push(["tag", `ticked by ${item.decided_by}`]);
   if (s.next && s.next.key === item.key) tags.push(["tag asknext", "ask next"]);

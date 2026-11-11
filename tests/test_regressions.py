@@ -266,7 +266,7 @@ class ScoringIdentityTests(unittest.IsolatedAsyncioTestCase):
             lambda r: httpx.Response(200, json={"answers": {"a1": {"noul": 0.9}}})))
         qs = parse_questions(SAMPLE).questions[:2]
         scores = await jev.score([line(0, "Them", "x")], qs, with_fit=False)
-        self.assertEqual(scores, {"1": (None, None), "2": (None, None)})
+        self.assertEqual(scores, {"1": (None, None), "2": (None, None), "2/p0": (None, None), "2/p1": (None, None)})
         self.assertEqual(jev.health.state, "degraded")
 
     def test_the_app_and_jev_share_one_threshold_set(self):

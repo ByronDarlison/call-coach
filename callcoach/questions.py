@@ -77,6 +77,23 @@ class Question(Item):
     parts: list[str] = field(default_factory=list)  # the question, then each indented line, for display only
     notes: list[str] = field(default_factory=list)  # indented code block under it: shown to you, never scored
     intro: list[str] = field(default_factory=list)  # plain lines just before it: what to say first
+    # For a question with several lines (parts), each line is scored on its own:
+    part_best: list[float] = field(default_factory=list)  # best score per line
+    part_hits: list[int] = field(default_factory=list)  # passes over the bar per line, on different evidence
+    part_revs: list[str] = field(default_factory=list)  # the evidence last counted per line
+    parts_answered: int = 0  # lines that count as answered
+
+    @property
+    def parts_total(self) -> int:
+        lines = [p for p in self.parts if p.strip()]  # the same rule as jev.scored_parts
+        return len(lines) if len(lines) > 1 else 0
+
+    @property
+    def partial(self) -> bool:
+        """Open, and either some of its lines answered, or asked with part of an answer seen (in the whole
+        question or in one of its lines)."""
+        return self.status == "open" and (super().partial or self.parts_answered > 0
+                                          or (self.asked and max(self.part_best, default=0.0) >= 0.3))
 
     def guide(self) -> dict:
         """The display-only fields, which a reset must keep."""
@@ -178,7 +195,8 @@ def _note(item: Item) -> str:
     if item.answered and item.decided_by:
         return f" *(ticked by {item.decided_by})*"
     if item.partial:
-        return " *(partly answered)*"
+        done, total = getattr(item, "parts_answered", 0), getattr(item, "parts_total", 0)
+        return f" *(partly answered: {done} of {total} lines)*" if done and total else " *(partly answered)*"
     if item.asked:
         return " *(asked, not answered)*"
     return ""
