@@ -743,19 +743,21 @@ def missing(rev: str, items: list[Item], with_fit: bool) -> set[str]:
 
 
 async def fetch(rev: str, lines: list[dict], items: list[Item], with_fit: bool, purpose: str,
-                now: float | None = None) -> None:
+                now: float | None = None) -> bool:
     """Send only the scoring questions still missing for this evidence and keep every valid answer by name.
     One request in a split batch can fail while the others answer: the answers kept are never sent again,
-    and the rest are retried later. Nothing is applied here: score_pass applies the cache afterwards."""
+    and the rest are retried later. Returns False when the cache was cleared while the request was out (its
+    answers are dropped); the caller applies the cache."""
     want = missing(rev, items, with_fit)
     if now is not None:
         cache.setdefault("tried", {})[rev] = now
     generation = scoring_generation
     scores = await jev.score(lines, items, with_fit=with_fit, purpose=purpose, only=want)
     if scoring_generation != generation:
-        return  # the cache was cleared meanwhile: these answers rest on what was forgotten
+        return False  # the cache was cleared meanwhile: these answers rest on what was forgotten
     got = cache.setdefault("answers", {}).setdefault(rev, {})  # looked up now, never held across the wait
     got.update({k: v for k, v in answers_by_name(items, scores, with_fit).items() if k in want or k not in got})
+    return True
 
 
 def stretch_start(item: Item) -> int | None:
@@ -765,87 +767,106 @@ def stretch_start(item: Item) -> int | None:
 
 
 async def score_pass(now: float | None = None) -> bool:
-    """One scoring pass. Returns True when a tick or the next pick changed."""
+    """One scoring pass. Returns True when a tick or the next pick changed.
+
+    Requests fill the gaps in the answer cache (only the scoring names still missing for each evidence).
+    Answers are applied as soon as they can count: cached ones before any request, each response as soon as
+    it is back (if the evidence it was sent for is unchanged and the cache was not cleared meanwhile), and
+    the whole cache again at the end, for the evidence as it is then. Applying the same answers again adds
+    no pass: passes count once per evidence revision, for the whole question and for each of its lines."""
     session.refresh_stretches()
     before = session.next_item()[0]
-    open_ = [i for i in session.items() if i.status == "open" and not i.manual]
-    if not open_ or not session.lines:
+    if not open_items() or not session.lines:
         return False
     now = time.monotonic() if now is None else now
     call = session.call_id
-    # 1. Requests: fill the gaps in the cache for the evidence as it is now.
-    window, window_rev, unasked = current_window(open_)
+    changed = apply_cached()
+    window, window_rev, unasked = current_window(open_items())
     if unasked and window and missing(window_rev, unasked, True) \
             and now - cache.get("window_at", -1e9) >= WINDOW_EVERY:
         cache["window_at"] = now  # throttled by the attempt, whether or not every answer comes back
-        await fetch(window_rev, window, unasked, True, "answers")
+        cache.setdefault("window_items", {}).setdefault(window_rev, set()).update(i.key for i in unasked)
+        lo, hi = window[0]["id"], window[-1]["id"] + 1
+        kept = await fetch(window_rev, window, unasked, True, "answers")
         if session.call_id != call:
             return False
-        session.refresh_stretches()  # a question may have been asked while the window was out
-        open_ = [i for i in session.items() if i.status == "open" and not i.manual]
-    note_early_evidence(open_)  # before the stretches are built: it can move where they start
+        # Later speech does not matter: only the lines that were sent must be unchanged.
+        if kept and revision([l for l in session.lines[lo:hi] if usable(l)]) == window_rev:
+            changed |= apply_window(window, window_rev, [i for i in unasked if i.status == "open" and not i.manual])
+    session.refresh_stretches()
     tried: dict = cache.setdefault("tried", {})
-    groups = {rev: g for rev, g in stretch_groups(open_).items() if missing(rev, g[1], False)}
+    groups = {rev: g for rev, g in stretch_groups(open_items()).items() if missing(rev, g[1], False)}
     # Evidence never sent goes first, then the longest since its last attempt; a retry waits WINDOW_EVERY.
     # So a stretch whose requests keep failing cannot hold every slot and starve the questions after it.
     due = [g for g in groups.items() if now - tried.get(g[0], -1e9) >= WINDOW_EVERY]
     due.sort(key=lambda g: tried.get(g[0], -1e9))
     for rev, (lines, items) in due[:STRETCH_GROUPS_PER_PASS]:
-        await fetch(rev, lines, items, False, "stretch", now)
+        kept = await fetch(rev, lines, items, False, "stretch", now)
         if session.call_id != call:
             return False
-    # 2. Decisions: apply everything cached for the evidence as it is now, after the waits. Answers that came
-    # back for evidence that has since changed wait in the cache until that evidence is current again (a
-    # later match can close a stretch back to it), and answers cached earlier are applied again when the bar
-    # changes (a question becomes asked). Applying the same answers again adds no pass: passes count once
-    # per evidence revision, for the whole question and for each of its lines.
-    session.refresh_stretches()
-    open_ = [i for i in session.items() if i.status == "open" and not i.manual]
-    answers: dict = cache.setdefault("answers", {})
-    tried = cache.setdefault("tried", {})
-    changed = False
-    note_early_evidence(open_)
-    window, window_rev, unasked = current_window(open_)
-    if unasked and window and window_rev in answers:
-        changed |= decide(unasked, scores_from_names(unasked, answers[window_rev], True),
-                          {i.key: window_rev for i in unasked}, window)
-    stretches = stretch_groups(open_)
-    for rev, (lines, items) in stretches.items():
-        if rev not in answers:
-            continue
-        items = [i for i in items if i.status == "open" and not i.manual]  # the window may have ticked one
-        for item in items:
-            if not missing(rev, [item], False):
-                item.scored_rev = rev  # every scoring question about it has a valid answer for this evidence
-        changed |= decide(items, scores_from_names(items, answers[rev], False), {i.key: rev for i in items}, lines)
+        if kept:  # apply now, before the next wait can change this evidence again
+            session.refresh_stretches()
+            now_items = [i for i in items if i.status == "open" and not i.manual
+                         and revision(evidence_lines(stretch_start(i), i.stretch_end)) == rev]
+            changed |= apply_stretch(rev, lines, now_items)
+    changed |= apply_cached()
     # Keep the answers for the evidence in use now and for the most recent other evidence (a stretch can close
     # back to evidence it had before); drop the rest so a long call does not grow the cache without end.
-    current = {window_rev, *stretches}
-    for store_ in (answers, tried):
+    window, window_rev, _ = current_window(open_items())
+    current = {window_rev, *stretch_groups(open_items())}
+    for store_ in (cache.setdefault("answers", {}), tried, cache.setdefault("window_items", {})):
         older = [r for r in store_ if r not in current]
         for rev in older[:max(0, len(older) - KEEP_OLD_EVIDENCE)]:
             del store_[rev]
     return changed or session.next_item()[0] is not before
 
 
-def note_early_evidence(open_: list[Item]) -> None:
-    """Earlier talk that may already answer an item: set its early_line from the cached answers for the
-    latest-talk window, so its stretch starts there once it is asked. This covers every open automatic item
-    the window was scored for as not asked yet (its fit was asked), including one asked while that request
-    was on its way, whose answers would otherwise be lost to it."""
-    window, window_rev, _ = current_window(open_)
-    have = cache.get("answers", {}).get(window_rev)
-    if not window or not have:
-        return
-    for item in open_:
-        fit = score_names(item, True).keys() - score_names(item, False).keys()  # asked only when not asked yet
-        if item.early_line is not None or not fit <= have.keys():
-            continue  # already has early evidence, or was not scored in this window as not asked yet
-        scores = scores_from_names([item], have, True)
+def open_items() -> list[Item]:
+    return [i for i in session.items() if i.status == "open" and not i.manual]
+
+
+def apply_window(window: list[dict], rev: str, items: list[Item]) -> bool:
+    """Apply the cached answers for this latest-talk window to the items it was scored for. Their answers
+    and line scores also mark the window as earlier evidence for them, whether or not their fit came back,
+    and even if they were asked while the request was out."""
+    have = cache.get("answers", {}).get(rev)
+    if not have or not items:
+        return False
+    scores = scores_from_names(items, have, True)
+    for item in items:
         found = [scores.get(item.key, (None, None))[0]] + [scores.get(part_key(item.key, n), (None, None))[0]
                                                            for n in range(len(scored_parts(item)))]
-        if max([v for v in found if v is not None], default=-1.0) >= limits["answered"]:
+        if item.early_line is None and max([v for v in found if v is not None], default=-1.0) >= limits["answered"]:
             item.early_line = window[0]["id"]  # earlier talk that may already answer it (or a line of it)
+    return decide(items, scores, {i.key: rev for i in items}, window)
+
+
+def apply_stretch(rev: str, lines: list[dict], items: list[Item]) -> bool:
+    """Apply the cached answers for this stretch evidence to the items whose stretch it is now."""
+    have = cache.get("answers", {}).get(rev)
+    if not have or not items:
+        return False
+    for item in items:
+        if not missing(rev, [item], False):
+            item.scored_rev = rev  # every scoring question about it has a valid answer for this evidence
+    return decide(items, scores_from_names(items, have, False), {i.key: rev for i in items}, lines)
+
+
+def apply_cached() -> bool:
+    """Apply everything cached for the evidence as it is now: the current window, for the items it was
+    scored for that are still open (including any asked since), then every current stretch. Answers that
+    came back for evidence that later changed count once that evidence is current again, and answers
+    cached before a question was asked count against the asked bar once it is."""
+    session.refresh_stretches()
+    changed = False
+    window, window_rev, _ = current_window(open_items())
+    scored_for = cache.get("window_items", {}).get(window_rev, set())
+    if window:
+        changed |= apply_window(window, window_rev, [i for i in open_items() if i.key in scored_for])
+    session.refresh_stretches()
+    for rev, (lines, items) in stretch_groups(open_items()).items():
+        changed |= apply_stretch(rev, lines, items)
+    return changed
 
 
 def current_window(open_: list[Item]) -> tuple[list[dict], str, list[Item]]:
