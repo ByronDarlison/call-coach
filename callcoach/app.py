@@ -41,8 +41,8 @@ from starlette.responses import FileResponse, JSONResponse, Response, StreamingR
 
 from . import security, store
 from .audio import Pipeline, Segment
-from .jev import (MAX_CRITERIA, JevClient, apply_final_scores, apply_scores, part_key, scored_parts, thresholds,
-                  turns_json)
+from .jev import (MAX_CRITERIA, JevClient, apply_final_scores, apply_scores, part_key, scored_completely,
+                  scored_parts, thresholds, turns_json)
 from .doctor import model_path
 from .questions import (MAX_FILE_BYTES, Followup, Item, Question, parse_questions, render_results,
                         render_transcript)
@@ -747,8 +747,8 @@ async def score_pass(now: float | None = None) -> bool:
             return False
         lo, hi = window[0]["id"], window[-1]["id"] + 1
         if revision([l for l in session.lines[lo:hi] if usable(l)]) == window_rev:  # unchanged meanwhile
-            if all(scores.get(i.key, (None, None))[0] is not None for i in unasked):
-                cache["window_rev"], cache["window_at"] = window_rev, now  # any failure: all retried next pass
+            if all(scored_completely(i, scores, with_fit=True) for i in unasked):
+                cache["window_rev"], cache["window_at"] = window_rev, now  # any gap: all retried next pass
             unasked = [i for i in unasked if i.status == "open" and not i.manual]
             for item in unasked:
                 answered = scores.get(item.key, (None, None))[0]
@@ -774,8 +774,8 @@ async def score_pass(now: float | None = None) -> bool:
         items = [i for i in items if i.status == "open" and not i.manual
                  and revision(evidence_lines(stretch_start(i), i.stretch_end)) == rev]
         for item in items:
-            if scores.get(item.key, (None, None))[0] is not None:
-                item.scored_rev = rev  # only a valid answer counts as scored; unknowns are retried
+            if scored_completely(item, scores, with_fit=False):
+                item.scored_rev = rev  # scored only when every piece came back; any gap is retried
         changed |= decide(items, scores, {i.key: rev for i in items}, lines)
     return changed or session.next_item()[0] is not before
 

@@ -7,7 +7,8 @@
 
 Then from the independent review of that fix (PR 11): line ticks must keep their evidence, a hand-back to
 Jev must forget line scores, one long question must not overflow a request, and partial progress must
-reach the page.
+reach the page. And from its second round (PR 12): a question's main point and its lines are scored in
+separate requests, so either can fail on its own.
 """
 
 import json
@@ -18,8 +19,9 @@ from pathlib import Path
 import httpx
 
 from callcoach import app
-from callcoach.jev import (MAX_BODY_BYTES, MAX_DECISIONS, JevClient, LineCheck, apply_final_scores, apply_scores,
-                           part_key, request_size, thresholds, turns_json)
+from callcoach.jev import (DATA_NOTICE, MAX_BODY_BYTES, MAX_DECISIONS, JevClient, LineCheck, apply_final_scores,
+                           apply_scores, part_key, parts_needed, request_size, scored_completely, thresholds,
+                           turns_json)
 from callcoach.questions import parse_questions, render_results
 
 from .test_core import FakeJev, line
@@ -361,6 +363,147 @@ class PartialUpdateTests(unittest.TestCase):
         self.assertTrue(apply_scores([q], {"2": (0.1, None), **parts(0.7, 0.1, 0.1)}, {"2": "a"}, LIMITS))
         self.assertEqual((q.status, q.parts_answered), ("open", 1))
         self.assertFalse(apply_scores([q], {"2": (0.1, None), **parts(0.7, 0.1, 0.1)}, {"2": "b"}, LIMITS))
+
+
+def long_question(number: int = 1, lines: int = 50) -> str:
+    """A parser-valid question with many lines, in two-byte characters."""
+    return f"{number}. " + "é" * 180 + "?\n" + "".join(f"   - {'é' * 2} {n}\n" for n in range(lines))
+
+
+def split_jev(fail_if, answer=0.7):
+    """A real client whose requests fail when fail_if(request questions) is true; others answer everything."""
+    sent = []
+
+    def handler(request):
+        questions = json.loads(request.content)["questions"]
+        sent.append(sorted(questions))
+        if fail_if(questions):
+            return httpx.Response(400, json={"error": "bad"})
+        return httpx.Response(200, json={"answers": {k: {"noul": answer} for k in questions},
+                                         "usage": {"input_tokens": 10}})
+    os.environ["CC_TEST_KEY"] = "k"
+    jev = JevClient({"api_key_env": "CC_TEST_KEY"}, app.limits)
+    jev.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return jev, sent
+
+
+class KeptScoreEvidenceTests(unittest.TestCase):
+    """Round 2, 1: a line's best score under today's bar keeps its evidence, since it counts once the bar
+    drops (the question is asked) or the stretch is shortened."""
+
+    def test_unasked_scores_then_a_delayed_match_then_a_correction(self):
+        s = session_with_list()
+        s.lines = [line(0, "Them", "We talked to fifteen; self-serve stays on."), line(1, "You", "Okay."),
+                   line(2, "Them", "More on that later."), line(3, "You", "Sure."),
+                   line(4, "You", "What did the trade show teach you?"), line(5, "Them", "Not much more.")]
+        q = s.questions[1]
+        app.decide([q], {"2": (0.1, None), **parts(0.7, 0.7, 0.1)}, {"2": "window"}, s.lines[0:4])
+        self.assertEqual(q.status, "open")  # 0.7 is under the 0.9 bar for a question not asked yet
+        app.mark_asked("2", s.lines[4])  # the match lands late; the stretch starts at line 4
+        app.decide([q], {"2": (0.1, None), **parts(0.1, 0.1, 0.1)}, {"2": "stretch"}, s.lines[4:6])
+        self.assertTrue(q.answered)  # the kept 0.7s now clear the asked bar well
+        self.assertIn(0, q.decision_lines)
+        s.lines[0]["text"] = "We have not talked to anyone."  # outside the new stretch
+        app.invalidate(s.lines[0])
+        self.assertEqual(q.status, "open")
+
+
+class IncompleteScoringTests(unittest.IsolatedAsyncioTestCase):
+    """Round 2, 2: evidence counts as scored only when every piece came back; a gap is retried."""
+
+    async def asyncTearDown(self):
+        if app.jev:
+            await app.jev.aclose()
+        app.jev = None
+
+    def session(self, asked: bool):
+        app.session = s = app.Session()
+        s.questions = parse_questions(long_question()).questions
+        s.questions_path, s.call_id, s.state = Path("/tmp/long.md"), "20261111-090000-abcdef", "listening"
+        app.limits.clear()
+        app.limits.update(LIMITS)
+        app.cache.clear()
+        s.lines = [line(0, "You", "What did the trade show teach you?"), line(1, "Them", "é" * 3000),
+                   line(2, "Them", "é" * 3000), line(3, "Them", "é" * 3000)]
+        if asked:
+            app.mark_asked("1", s.lines[0])
+        return s
+
+    def test_complete_means_every_piece(self):
+        q = parse_questions(LIST).questions[1]
+        full = {"2": (0.5, 0.5), **parts(0.5, 0.5, 0.5)}
+        self.assertTrue(scored_completely(q, full, with_fit=True))
+        self.assertFalse(scored_completely(q, {**full, part_key("2", 2): (None, None)}, with_fit=False))
+        self.assertFalse(scored_completely(q, {**full, "2": (0.5, None)}, with_fit=True))  # fit missing
+        self.assertTrue(scored_completely(q, {**full, "2": (0.5, None)}, with_fit=False))
+
+    async def test_a_stretch_with_a_failed_later_batch_is_scored_again(self):
+        s = self.session(asked=True)
+        app.jev, sent = split_jev(lambda qs: "a1p50" in qs, answer=0.1)
+        await app.score_pass(now=0.0)
+        first = len(sent)
+        self.assertGreater(first, 1)  # the question really was split
+        self.assertEqual(s.questions[0].scored_rev, "")
+        await app.score_pass(now=1.0)
+        self.assertGreater(len(sent), first)  # the same evidence is sent again
+
+    async def test_a_window_with_a_failed_later_batch_is_scored_again(self):
+        s = self.session(asked=False)
+        app.jev, sent = split_jev(lambda qs: "a1p50" in qs or "f1" in qs, answer=0.1)
+        await app.score_pass(now=100.0)
+        first = len(sent)
+        self.assertGreater(first, 1)
+        self.assertNotIn("window_rev", app.cache)
+        await app.score_pass(now=200.0)
+        self.assertGreater(len(sent), first)
+
+
+class LinesWithoutMainScoreTests(unittest.IsolatedAsyncioTestCase):
+    """Round 2, 3: enough answered lines tick a question even when its main score failed."""
+
+    def setUp(self):
+        self.q = parse_questions(LIST).questions[1]
+        self.q.asked = True
+
+    def test_during_the_call(self):
+        self.assertTrue(apply_scores([self.q], parts(0.7, 0.7, 0.1), {"2": "a"}, LIMITS))
+        self.assertTrue(self.q.answered)
+        self.assertEqual(self.q.decision_score, 0.7)
+
+    def test_at_stop(self):
+        apply_final_scores([self.q], parts(0.5, 0.5, 0.1), LIMITS)
+        self.assertEqual(self.q.decided_by, "jev at stop")
+
+    def test_manual_and_ticked_items_are_still_left_alone(self):
+        self.q.decide("open", "you")
+        apply_scores([self.q], parts(0.9, 0.9, 0.9), {"2": "a"}, LIMITS)
+        apply_final_scores([self.q], parts(0.9, 0.9, 0.9), LIMITS)
+        self.assertEqual((self.q.status, self.q.decided_by), ("open", "you"))
+
+    async def test_a_real_split_request_with_a_failed_first_batch(self):
+        lines = [line(i, "Them", "é" * 400) for i in range(60)]
+        state = ("Interview transcript, most recent last. 'You' is the interviewer; 'Them' is the person being "
+                 "interviewed. " + DATA_NOTICE + "\n\n" + turns_json(lines))
+        os.environ["CC_TEST_KEY"] = "k"
+        probe = JevClient({"api_key_env": "CC_TEST_KEY"})
+        # Find a list where question 2's main point is in the first request but most of its lines are not.
+        for k in range(2, 50):
+            qs = parse_questions(long_question(1, k) + long_question(2)).questions
+            first = probe._batches(qs, state, with_fit=False)[0]
+            if "a2" in first and 51 - sum(key.startswith("a2p") for key in first) >= parts_needed(51, LIMITS):
+                break
+        else:
+            self.fail("no list puts question 2's main point in the first request with most lines after it")
+        await probe.aclose()
+        jev, sent = split_jev(lambda q: "a2" in q)
+        scores = await jev.score(lines, qs, with_fit=False, purpose="final")
+        await jev.aclose()
+        self.assertGreater(len(sent), 1)
+        self.assertIsNone(scores["2"][0])  # the main point's request failed
+        for q in qs:
+            q.asked = True
+        apply_final_scores(qs, scores, LIMITS)
+        self.assertEqual(qs[1].decided_by, "jev at stop")
 
 
 if __name__ == "__main__":

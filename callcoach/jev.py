@@ -112,6 +112,16 @@ def part_key(key: str, n: int) -> str:
     return f"{key}/p{n}"
 
 
+def scored_completely(item, scores: dict, with_fit: bool) -> bool:
+    """True when Jev gave a valid score for everything asked about this item: its main point, each of its
+    lines and, when asked for, its fit. The scoring questions are split across requests and any request can
+    fail, so a missing piece means this evidence must be scored again, not marked as done."""
+    main, fit = scores.get(item.key, (None, None))
+    return (main is not None and (fit is not None or not with_fit)
+            and all(scores.get(part_key(item.key, n), (None, None))[0] is not None
+                    for n in range(len(scored_parts(item)))))
+
+
 def request_size(body: dict) -> dict:
     return {"bytes": len(json.dumps(body, ensure_ascii=False).encode()), "state_units": utf16_units(body["state"])}
 
@@ -543,10 +553,12 @@ def apply_parts(item, scores: dict, rev: str | None, limits: dict, evidence=None
         score = scores.get(key, (None, None))[0]
         if score is None:
             continue
-        item.part_best[n] = max(item.part_best[n], score)
-        if score >= bar:
+        if score >= bar or score >= item.part_best[n]:
+            # Keep the evidence of every score that can count: over today's bar, or the best kept so far,
+            # which counts later if the bar drops (the question is asked) or the stretch is shortened.
             ids = evidence.get(key, []) if isinstance(evidence, dict) else (evidence or [])
             item.part_lines[n] = sorted(set(item.part_lines[n]) | set(ids))
+        item.part_best[n] = max(item.part_best[n], score)
         if score >= bar and (rev is None or rev != item.part_revs[n]):
             item.part_hits[n] += 1
             item.part_revs[n] = rev or ""
@@ -574,16 +586,26 @@ def apply_scores(items: list, scores: dict, revisions: dict[str, str], limits: d
             item.answered_score = answered
             item.best_score = max(item.best_score, answered)
         changed |= (item.partial, getattr(item, "parts_answered", 0)) != shown
-        if answered is None or item.manual or item.status != "open":
+        if item.manual or item.status != "open":
             continue
-        bar = bar_for(item, limits)
-        if answered >= bar and rev != item.evidence_rev:
-            item.high_passes += 1
-            item.evidence_rev = rev
-        if item.high_passes >= limits["passes"] or answered >= bar + limits["strong_margin"] or parts_done:
-            item.decide("answered", "jev", answered)
+        whole = False
+        if answered is not None:  # the main point and the lines are scored in separate requests: either may fail
+            bar = bar_for(item, limits)
+            if answered >= bar and rev != item.evidence_rev:
+                item.high_passes += 1
+                item.evidence_rev = rev
+            whole = item.high_passes >= limits["passes"] or answered >= bar + limits["strong_margin"]
+        if whole or parts_done:
+            item.decide("answered", "jev", decision_score(item, answered))
             changed = True
     return changed
+
+
+def decision_score(item, answered: float | None) -> float | None:
+    """The score a tick is recorded with: the main point's, else the best line's."""
+    if answered is not None:
+        return answered
+    return max(getattr(item, "part_best", None) or [], default=None)
 
 
 def apply_final_scores(items: list, scores: dict, limits: dict, sources: dict | None = None) -> None:
@@ -592,11 +614,10 @@ def apply_final_scores(items: list, scores: dict, limits: dict, sources: dict | 
     for item in items:
         answered = scores.get(item.key, (None, None))[0]
         parts_done = apply_parts(item, scores, None, limits, sources or {})
-        if answered is None:
-            continue
-        item.answered_score = answered
-        item.best_score = max(item.best_score, answered)
+        if answered is not None:
+            item.answered_score = answered
+            item.best_score = max(item.best_score, answered)
         if item.manual or item.status != "open":
             continue
-        if answered >= bar_for(item, limits) or parts_done:
-            item.decide("answered", "jev at stop", answered)
+        if (answered is not None and answered >= bar_for(item, limits)) or parts_done:
+            item.decide("answered", "jev at stop", decision_score(item, answered))
