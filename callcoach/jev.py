@@ -579,9 +579,9 @@ def apply_parts(item, scores: dict, rev: str | None, limits: dict, evidence=None
     total = len(scored_parts(item))
     if not total or not hasattr(item, "part_best"):
         return False
-    if len(item.part_best) != total or len(item.part_lines) != total:
+    if len(item.part_best) != total or len(item.part_lines) != total or len(item.part_counted) != total:
         item.part_best, item.part_hits, item.part_revs = [0.0] * total, [0] * total, [""] * total
-        item.part_lines = [[] for _ in range(total)]
+        item.part_lines, item.part_counted = [[] for _ in range(total)], [[] for _ in range(total)]
     bar = bar_for(item, limits)
     for n in range(total):
         key = part_key(item.key, n)
@@ -594,9 +594,11 @@ def apply_parts(item, scores: dict, rev: str | None, limits: dict, evidence=None
             ids = evidence.get(key, []) if isinstance(evidence, dict) else (evidence or [])
             item.part_lines[n] = sorted(set(item.part_lines[n]) | set(ids))
         item.part_best[n] = max(item.part_best[n], score)
-        if score >= bar and (rev is None or rev != item.part_revs[n]):
-            item.part_hits[n] += 1
+        if score >= bar and (rev is None or rev not in item.part_counted[n]):  # each evidence counts once,
+            item.part_hits[n] += 1                                              # even when it comes back
             item.part_revs[n] = rev or ""
+            if rev is not None:
+                item.part_counted[n].append(rev)
     covered = [n for n in range(total) if item.part_best[n] >= bar and (
         rev is None or item.part_hits[n] >= limits["passes"] or item.part_best[n] >= bar + limits["strong_margin"])]
     item.parts_answered = len(covered)
@@ -626,9 +628,10 @@ def apply_scores(items: list, scores: dict, revisions: dict[str, str], limits: d
         whole = False
         if answered is not None:  # the main point and the lines are scored in separate requests: either may fail
             bar = bar_for(item, limits)
-            if answered >= bar and rev != item.evidence_rev:
-                item.high_passes += 1
+            if answered >= bar and rev not in item.counted_revs:  # each evidence counts once, even when a
+                item.high_passes += 1                             # stretch closes back to it later
                 item.evidence_rev = rev
+                item.counted_revs.append(rev)
             whole = item.high_passes >= limits["passes"] or answered >= bar + limits["strong_margin"]
         if whole or parts_done:
             item.decide("answered", "jev", decision_score(item, answered))
