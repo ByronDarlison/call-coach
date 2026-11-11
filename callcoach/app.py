@@ -58,6 +58,7 @@ JEV_EVERY = 4.0
 WINDOW_EVERY = 12.0  # seconds between checks of the latest talk against questions not yet asked
 WINDOW_LINES = 40
 STRETCH_GROUPS_PER_PASS = 6
+KEEP_OLD_EVIDENCE = 32  # cached answers kept for evidence no longer in use, newest first
 BATCH_LINES = 12  # wait_for_update returns after this many new lines even with nothing flagged
 JUMP_FIT = 0.85  # Jev may jump ahead of list order only when a later question fits this well...
 JUMP_MARGIN = 0.3  # ...and fits this much better than the next question in order
@@ -312,7 +313,17 @@ stop_task: asyncio.Task | None = None
 # Scoring cache, one model for the latest-talk window and the question stretches (see score_pass):
 #   "answers": evidence revision -> {scoring name: Jev's valid answer}, so only missing names are sent again
 #   "tried": evidence revision -> when it was last sent; "window_at": when the window was last sent
+# Answers are applied every pass from this cache, for the evidence as it is then; requests only fill gaps.
 cache: dict[str, object] = {}
+scoring_generation = 0  # bumped by every clear_scores(), so an answer in flight across a clear is dropped
+
+
+def clear_scores() -> None:
+    """Forget every cached answer (a correction, a hand-back to Jev, a new call). A request already on its
+    way when this runs is from before: its answers are dropped when they come back (see fetch)."""
+    global scoring_generation
+    scoring_generation += 1
+    cache.clear()
 
 mcp = FastMCP(
     "call-coach",
@@ -732,17 +743,19 @@ def missing(rev: str, items: list[Item], with_fit: bool) -> set[str]:
 
 
 async def fetch(rev: str, lines: list[dict], items: list[Item], with_fit: bool, purpose: str,
-                now: float | None = None) -> dict:
-    """Send only the scoring questions still missing for this evidence, keep every valid answer by name,
-    and return the scores of everything answered so far for it. One request in a split batch can fail
-    while the others answer: the answers kept are never sent again, and the rest are retried later."""
+                now: float | None = None) -> None:
+    """Send only the scoring questions still missing for this evidence and keep every valid answer by name.
+    One request in a split batch can fail while the others answer: the answers kept are never sent again,
+    and the rest are retried later. Nothing is applied here: score_pass applies the cache afterwards."""
     want = missing(rev, items, with_fit)
     if now is not None:
         cache.setdefault("tried", {})[rev] = now
-    got = cache.setdefault("answers", {}).setdefault(rev, {})
+    generation = scoring_generation
     scores = await jev.score(lines, items, with_fit=with_fit, purpose=purpose, only=want)
+    if scoring_generation != generation:
+        return  # the cache was cleared meanwhile: these answers rest on what was forgotten
+    got = cache.setdefault("answers", {}).setdefault(rev, {})  # looked up now, never held across the wait
     got.update({k: v for k, v in answers_by_name(items, scores, with_fit).items() if k in want or k not in got})
-    return scores_from_names(items, got, with_fit)
 
 
 def stretch_start(item: Item) -> int | None:
@@ -758,59 +771,81 @@ async def score_pass(now: float | None = None) -> bool:
     open_ = [i for i in session.items() if i.status == "open" and not i.manual]
     if not open_ or not session.lines:
         return False
-    changed = False
     now = time.monotonic() if now is None else now
-    unasked = [i for i in open_ if session.eligible(i)]
-    window = evidence_lines(len(session.lines) - WINDOW_LINES, None)
-    window_rev = revision(window)
     call = session.call_id
-    answers: dict = cache.setdefault("answers", {})
-    tried: dict = cache.setdefault("tried", {})
+    # 1. Requests: fill the gaps in the cache for the evidence as it is now.
+    window, window_rev, unasked = current_window(open_)
     if unasked and window and missing(window_rev, unasked, True) \
             and now - cache.get("window_at", -1e9) >= WINDOW_EVERY:
         cache["window_at"] = now  # throttled by the attempt, whether or not every answer comes back
-        scores = await fetch(window_rev, window, unasked, True, "answers")
+        await fetch(window_rev, window, unasked, True, "answers")
         if session.call_id != call:
             return False
-        lo, hi = window[0]["id"], window[-1]["id"] + 1
-        if revision([l for l in session.lines[lo:hi] if usable(l)]) == window_rev:  # unchanged meanwhile
-            unasked = [i for i in unasked if i.status == "open" and not i.manual]
-            for item in unasked:
-                answered = scores.get(item.key, (None, None))[0]
-                lines_ = [scores.get(part_key(item.key, n), (None, None))[0] for n in range(len(scored_parts(item)))]
-                best = max([s for s in [answered, *lines_] if s is not None], default=None)
-                if best is not None and best >= limits["answered"] and item.early_line is None:
-                    item.early_line = window[0]["id"]  # earlier talk that may already answer it (or a line of it)
-            changed |= decide(unasked, scores, {i.key: window_rev for i in unasked}, window)
-    groups: dict[str, tuple[list[dict], list[Item]]] = {}
-    current = {window_rev}  # the evidence in use now: its answers are kept, older evidence's dropped
-    for item in open_:
-        if item.asked_line is None:
-            continue
-        lines = evidence_lines(stretch_start(item), item.stretch_end)
-        rev = revision(lines)
-        current.add(rev)
-        if lines and missing(rev, [item], False):
-            groups.setdefault(rev, (lines, []))[1].append(item)
+    tried: dict = cache.setdefault("tried", {})
+    groups = {rev: g for rev, g in stretch_groups(open_).items() if missing(rev, g[1], False)}
     # Evidence never sent goes first, then the longest since its last attempt; a retry waits WINDOW_EVERY.
     # So a stretch whose requests keep failing cannot hold every slot and starve the questions after it.
     due = [g for g in groups.items() if now - tried.get(g[0], -1e9) >= WINDOW_EVERY]
     due.sort(key=lambda g: tried.get(g[0], -1e9))
     for rev, (lines, items) in due[:STRETCH_GROUPS_PER_PASS]:
-        scores = await fetch(rev, lines, items, False, "stretch", now)
+        await fetch(rev, lines, items, False, "stretch", now)
         if session.call_id != call:
             return False
-        # Apply only to items whose evidence is still exactly what was sent, and still open.
-        items = [i for i in items if i.status == "open" and not i.manual
-                 and revision(evidence_lines(stretch_start(i), i.stretch_end)) == rev]
+    # 2. Decisions: apply everything cached for the evidence as it is now, after the waits. Answers that came
+    # back for evidence that has since changed wait in the cache until that evidence is current again (a
+    # later match can close a stretch back to it), and answers cached earlier are applied again when the bar
+    # changes (a question becomes asked). Applying the same answers again adds no pass: passes count once
+    # per evidence revision, for the whole question and for each of its lines.
+    session.refresh_stretches()
+    open_ = [i for i in session.items() if i.status == "open" and not i.manual]
+    answers: dict = cache.setdefault("answers", {})
+    tried = cache.setdefault("tried", {})
+    changed = False
+    window, window_rev, unasked = current_window(open_)
+    if unasked and window and window_rev in answers:
+        scores = scores_from_names(unasked, answers[window_rev], True)
+        for item in unasked:
+            answered = scores.get(item.key, (None, None))[0]
+            lines_ = [scores.get(part_key(item.key, n), (None, None))[0] for n in range(len(scored_parts(item)))]
+            best = max([s for s in [answered, *lines_] if s is not None], default=None)
+            if best is not None and best >= limits["answered"] and item.early_line is None:
+                item.early_line = window[0]["id"]  # earlier talk that may already answer it (or a line of it)
+        changed |= decide(unasked, scores, {i.key: window_rev for i in unasked}, window)
+    stretches = stretch_groups(open_)
+    for rev, (lines, items) in stretches.items():
+        if rev not in answers:
+            continue
+        items = [i for i in items if i.status == "open" and not i.manual]  # the window may have ticked one
         for item in items:
             if not missing(rev, [item], False):
                 item.scored_rev = rev  # every scoring question about it has a valid answer for this evidence
-        changed |= decide(items, scores, {i.key: rev for i in items}, lines)
+        changed |= decide(items, scores_from_names(items, answers[rev], False), {i.key: rev for i in items}, lines)
+    # Keep the answers for the evidence in use now and for the most recent other evidence (a stretch can close
+    # back to evidence it had before); drop the rest so a long call does not grow the cache without end.
+    current = {window_rev, *stretches}
     for store_ in (answers, tried):
-        for rev in [r for r in store_ if r not in current]:
-            del store_[rev]  # evidence that has changed is never scored again
+        older = [r for r in store_ if r not in current]
+        for rev in older[:max(0, len(older) - KEEP_OLD_EVIDENCE)]:
+            del store_[rev]
     return changed or session.next_item()[0] is not before
+
+
+def current_window(open_: list[Item]) -> tuple[list[dict], str, list[Item]]:
+    """The latest talk, its revision, and the open items not asked yet that it is scored against."""
+    window = evidence_lines(len(session.lines) - WINDOW_LINES, None)
+    return window, revision(window), [i for i in open_ if session.eligible(i)]
+
+
+def stretch_groups(open_: list[Item]) -> dict[str, tuple[list[dict], list[Item]]]:
+    """Asked open items grouped by the evidence of their stretch: revision -> (lines, items)."""
+    groups: dict[str, tuple[list[dict], list[Item]]] = {}
+    for item in open_:
+        if item.asked_line is None:
+            continue
+        lines = evidence_lines(stretch_start(item), item.stretch_end)
+        if lines:
+            groups.setdefault(revision(lines), (lines, []))[1].append(item)
+    return groups
 
 
 async def jev_loop() -> None:
@@ -926,7 +961,7 @@ def reset_call() -> None:
     session.replay_clock, session.held, session.base_status = 0.0, [], ""
     session.loose_issued, session.updates = 0, []
     session.state = "idle"
-    cache.clear()
+    clear_scores()
     for q in session.questions:
         fresh = Question(text=q.text, number=q.number, section=q.section, **q.guide())
         q.__dict__.update(fresh.__dict__)
@@ -1301,7 +1336,7 @@ def set_state(key: str, state: str, actor: str, reason: str | None = None) -> It
         item.pass_lines, item.decision_lines = [], []  # old evidence no longer supports anything
         if isinstance(item, Question):
             item.clear_parts()
-        cache.clear()  # rescore on the next pass
+        clear_scores()  # rescore on the next pass
     elif state in ("answered", "open", "skipped"):
         item.decide(state, actor, item.answered_score if state == "answered" else None, reason)
     else:
@@ -1767,7 +1802,7 @@ def invalidate(line: dict) -> None:
             item.high_passes, item.evidence_rev, item.scored_rev, item.pass_lines = 0, "", "", []
             if isinstance(item, Question):
                 item.clear_parts()
-    cache.clear()
+    clear_scores()
 
 
 @mcp.tool()
