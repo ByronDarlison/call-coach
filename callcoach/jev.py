@@ -112,6 +112,46 @@ def part_key(key: str, n: int) -> str:
     return f"{key}/p{n}"
 
 
+def score_names(item, with_fit: bool) -> dict[str, tuple[str, int]]:
+    """Every scoring question asked about an item, by the name sent to Jev: its main point ("a1"), each of
+    its lines ("a1p0", ...) and, when asked for, its fit ("f1"). Each maps to where its answer goes in
+    score()'s result: (key, 0) for an answer, (key, 1) for a fit. These are the units that are cached and
+    retried, since any of them can be in a request that fails."""
+    slug = item.key.replace(".", "-")
+    out = {f"a{slug}": (item.key, 0)}
+    out.update({f"a{slug}p{n}": (part_key(item.key, n), 0) for n in range(len(scored_parts(item)))})
+    if with_fit:
+        out[f"f{slug}"] = (item.key, 1)
+    return out
+
+
+def answers_by_name(items: list, scores: dict, with_fit: bool) -> dict[str, float]:
+    """The valid answers in a score() result, by scoring name."""
+    out = {}
+    for item in items:
+        for name, (key, i) in score_names(item, with_fit).items():
+            value = scores.get(key, (None, None))[i]
+            if value is not None:
+                out[name] = value
+    return out
+
+
+def scores_from_names(items: list, answers: dict[str, float], with_fit: bool) -> dict:
+    """score()'s result rebuilt from answers by scoring name; a missing name is None."""
+    out: dict = {}
+    for item in items:
+        for name, (key, i) in score_names(item, with_fit).items():
+            pair = list(out.get(key, (None, None)))
+            pair[i] = answers.get(name)
+            out[key] = tuple(pair)
+    return out
+
+
+def scored_completely(item, scores: dict, with_fit: bool) -> bool:
+    """True when Jev gave a valid answer to every scoring question about this item (see score_names)."""
+    return len(answers_by_name([item], scores, with_fit)) == len(score_names(item, with_fit))
+
+
 def request_size(body: dict) -> dict:
     return {"bytes": len(json.dumps(body, ensure_ascii=False).encode()), "state_units": utf16_units(body["state"])}
 
@@ -308,28 +348,28 @@ class JevClient:
             h.paused_until = time.monotonic() + PAUSE_SECONDS
             h.error += f" (paused for {PAUSE_SECONDS} s after {h.failures} failures)"
 
-    async def score(self, lines: list[dict], items: list, with_fit: bool = True,
-                    purpose: str = "answers") -> dict[str, tuple[float | None, float | None]]:
+    async def score(self, lines: list[dict], items: list, with_fit: bool = True, purpose: str = "answers",
+                    only: set[str] | None = None) -> dict[str, tuple[float | None, float | None]]:
         """Score items (questions and follow-ups) against these turns: has the interviewee answered its
-        main point, and how well would it fit as the next question. None means Jev gave no valid answer.
-        Long lists are split into several requests that stay inside the broker's limits."""
+        main point (and each line of a question with several), and how well would it fit as the next
+        question. None means Jev gave no valid answer. Long lists are split into several requests that stay
+        inside the broker's limits. only, when given, limits the request to those scoring names (see
+        score_names), for a retry of the pieces a failed request left out."""
         if not items or not lines:
             return {}
         state = ("Interview transcript, most recent last. 'You' is the interviewer; 'Them' is the person "
                  "being interviewed. " + DATA_NOTICE + "\n\n" + turns_json(lines))
         out: dict[str, tuple[float | None, float | None]] = {}
-        for batch in self._batches(items, state, with_fit):
-            questions = {}
-            for item in batch:
-                questions.update(self._score_questions(item, with_fit))
-            answers = await self._ask(purpose, state, questions) or {}
-            for item in batch:
-                slug = item.key.replace(".", "-")
-                answered = _prob((answers.get(f"a{slug}") or {}).get("noul"))
-                fit = _prob((answers.get(f"f{slug}") or {}).get("noul")) if with_fit else None
-                out[item.key] = (answered, fit)
-                for n in range(len(scored_parts(item))):
-                    out[part_key(item.key, n)] = (_prob((answers.get(f"a{slug}p{n}") or {}).get("noul")), None)
+        answers: dict = {}
+        for batch in self._batches(items, state, with_fit, only):
+            answers.update(await self._ask(purpose, state, batch) or {})  # a failed batch leaves its keys unknown
+        for item in items:
+            slug = item.key.replace(".", "-")
+            answered = _prob((answers.get(f"a{slug}") or {}).get("noul"))
+            fit = _prob((answers.get(f"f{slug}") or {}).get("noul")) if with_fit else None
+            out[item.key] = (answered, fit)
+            for n in range(len(scored_parts(item))):
+                out[part_key(item.key, n)] = (_prob((answers.get(f"a{slug}p{n}") or {}).get("noul")), None)
         return out
 
     @staticmethod
@@ -351,19 +391,22 @@ class JevClient:
                 f"now: {quoted}")}
         return out
 
-    def _batches(self, items: list, state: str, with_fit: bool) -> list[list]:
-        """Split items so every request, measured exactly as it will be sent, fits the broker."""
-        batches, current, questions = [], [], {}
-        per = 2 if with_fit else 1
+    def _batches(self, items: list, state: str, with_fit: bool, only: set[str] | None = None) -> list[dict]:
+        """Split the scoring questions (every item's answer, fit and line questions; only those named in
+        only, when given) into requests that each fit the broker, measured exactly as they will be sent.
+        Split between single questions, not between items, since one question written on many lines can need
+        more than one request by itself."""
+        batches, current = [], {}
         for item in items:
-            mine = self._score_questions(item, with_fit)
-            trial = {**questions, **mine}
-            body = {"model": self.model, "state": state, "questions": trial}
-            if current and (len(trial) > MAX_DECISIONS or request_size(body)["bytes"] > MAX_BODY_BYTES):
-                batches.append(current)
-                current, trial = [], dict(mine)
-            current.append(item)
-            questions = trial
+            for name, spec in self._score_questions(item, with_fit).items():
+                if only is not None and name not in only:
+                    continue
+                trial = {**current, name: spec}
+                body = {"model": self.model, "state": state, "questions": trial}
+                if current and (len(trial) > MAX_DECISIONS or request_size(body)["bytes"] > MAX_BODY_BYTES):
+                    batches.append(current)
+                    trial = {name: spec}
+                current = trial
         return batches + ([current] if current else [])
 
     def _interviewer_body(self, text: str, context: list[dict], items: list, parents: dict[str, str] | None) -> dict:
@@ -527,20 +570,29 @@ def parts_needed(total: int, limits: dict) -> int:
     return max(1, math.ceil(total * limits["part_share"] - 1e-9))
 
 
-def apply_parts(item, scores: dict, rev: str | None, limits: dict) -> bool:
+def apply_parts(item, scores: dict, rev: str | None, limits: dict, evidence=None) -> bool:
     """Count the answered lines of a question with several. A line counts once it has been over the bar on
     two different pieces of evidence (or one well over it); at Stop (rev None) one pass is enough.
-    Returns True when enough lines are answered for the question to tick."""
+    evidence gives the transcript line ids each score was read from (a list for all keys, or a dict by
+    key); every score over the bar keeps its ids in part_lines, so a correction to any of them reopens a
+    tick that rested on them. Returns True when enough lines are answered for the question to tick."""
     total = len(scored_parts(item))
     if not total or not hasattr(item, "part_best"):
         return False
-    if len(item.part_best) != total:
+    if len(item.part_best) != total or len(item.part_lines) != total:
         item.part_best, item.part_hits, item.part_revs = [0.0] * total, [0] * total, [""] * total
+        item.part_lines = [[] for _ in range(total)]
     bar = bar_for(item, limits)
     for n in range(total):
-        score = scores.get(part_key(item.key, n), (None, None))[0]
+        key = part_key(item.key, n)
+        score = scores.get(key, (None, None))[0]
         if score is None:
             continue
+        if score >= bar or score >= item.part_best[n]:
+            # Keep the evidence of every score that can count: over today's bar, or the best kept so far,
+            # which counts later if the bar drops (the question is asked) or the stretch is shortened.
+            ids = evidence.get(key, []) if isinstance(evidence, dict) else (evidence or [])
+            item.part_lines[n] = sorted(set(item.part_lines[n]) | set(ids))
         item.part_best[n] = max(item.part_best[n], score)
         if score >= bar and (rev is None or rev != item.part_revs[n]):
             item.part_hits[n] += 1
@@ -551,43 +603,56 @@ def apply_parts(item, scores: dict, rev: str | None, limits: dict) -> bool:
     return len(covered) >= parts_needed(total, limits)
 
 
-def apply_scores(items: list, scores: dict, revisions: dict[str, str], limits: dict) -> bool:
+def apply_scores(items: list, scores: dict, revisions: dict[str, str], limits: dict,
+                 evidence: list[int] | None = None) -> bool:
     """Update items from one Jev pass. Returns True when anything visible changed (a tick or the next pick).
     An item ticks after two passes over its bar on different evidence, or one pass well over it. A question
-    with several lines also ticks once most of its lines have each got there (see apply_parts)."""
+    with several lines also ticks once most of its lines have each got there (see apply_parts). A change
+    in what the page shows as partly answered also counts as a change."""
     changed = False
     for item in items:
+        shown = (item.partial, getattr(item, "parts_answered", 0))
         answered, fit = scores.get(item.key, (None, None))
         if fit is not None:
             item.fit_score = fit
         rev = revisions.get(item.key, "")
-        parts_done = apply_parts(item, scores, rev, limits)
-        if answered is None:
-            continue  # Jev gave no valid answer: keep the last good score rather than invent a zero
-        item.answered_score = answered
-        item.best_score = max(item.best_score, answered)
+        parts_done = apply_parts(item, scores, rev, limits, evidence)
+        if answered is not None:  # else Jev gave no valid answer: keep the last good score, not a zero
+            item.answered_score = answered
+            item.best_score = max(item.best_score, answered)
+        changed |= (item.partial, getattr(item, "parts_answered", 0)) != shown
         if item.manual or item.status != "open":
             continue
-        bar = bar_for(item, limits)
-        if answered >= bar and rev != item.evidence_rev:
-            item.high_passes += 1
-            item.evidence_rev = rev
-        if item.high_passes >= limits["passes"] or answered >= bar + limits["strong_margin"] or parts_done:
-            item.decide("answered", "jev", answered)
+        whole = False
+        if answered is not None:  # the main point and the lines are scored in separate requests: either may fail
+            bar = bar_for(item, limits)
+            if answered >= bar and rev != item.evidence_rev:
+                item.high_passes += 1
+                item.evidence_rev = rev
+            whole = item.high_passes >= limits["passes"] or answered >= bar + limits["strong_margin"]
+        if whole or parts_done:
+            item.decide("answered", "jev", decision_score(item, answered))
             changed = True
     return changed
 
 
-def apply_final_scores(items: list, scores: dict, limits: dict) -> None:
-    """At Stop there is no second pass to wait for, so one score over the bar is enough to tick."""
+def decision_score(item, answered: float | None) -> float | None:
+    """The score a tick is recorded with: the main point's, else the best line's."""
+    if answered is not None:
+        return answered
+    return max(getattr(item, "part_best", None) or [], default=None)
+
+
+def apply_final_scores(items: list, scores: dict, limits: dict, sources: dict | None = None) -> None:
+    """At Stop there is no second pass to wait for, so one score over the bar is enough to tick. sources
+    gives, by key, the transcript line ids each best score was read from."""
     for item in items:
         answered = scores.get(item.key, (None, None))[0]
-        parts_done = apply_parts(item, scores, None, limits)
-        if answered is None:
-            continue
-        item.answered_score = answered
-        item.best_score = max(item.best_score, answered)
+        parts_done = apply_parts(item, scores, None, limits, sources or {})
+        if answered is not None:
+            item.answered_score = answered
+            item.best_score = max(item.best_score, answered)
         if item.manual or item.status != "open":
             continue
-        if answered >= bar_for(item, limits) or parts_done:
-            item.decide("answered", "jev at stop", answered)
+        if (answered is not None and answered >= bar_for(item, limits)) or parts_done:
+            item.decide("answered", "jev at stop", decision_score(item, answered))

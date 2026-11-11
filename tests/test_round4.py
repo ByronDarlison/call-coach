@@ -100,11 +100,15 @@ class WindowBoundaryTests(unittest.IsolatedAsyncioTestCase):
         class Scores(FakeJev):
             async def score(self, lines, items, **k):
                 seen.append(k.get("purpose", "answers"))
-                return {i.key: (0.99, 0.1) for i in items}
+                from callcoach.jev import part_key, scored_parts
+                out = {i.key: (0.99, 0.1) for i in items}  # every piece answered, as a full reply has
+                out.update({part_key(i.key, n): (0.99, None) for i in items for n in range(len(scored_parts(i)))})
+                return out
         app.jev = Scores()
         await app.score_pass(now=100.0)
         self.assertEqual(seen, ["answers", "stretch"])
-        self.assertIn("window_rev", app.cache)
+        self.assertEqual(app.missing(app.revision(app.evidence_lines(42 - app.WINDOW_LINES, None)),
+                                     [q for q in s.questions if s.eligible(q)], True), set())  # all answered
         self.assertEqual(s.questions[0].status, "answered")
 
 
