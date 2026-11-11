@@ -34,7 +34,7 @@ class Item:
     fit_score: float = 0.0
     high_passes: int = 0
     evidence_rev: str = ""  # the evidence last counted towards high_passes, so retries are not counted twice
-    scored_rev: str = ""  # the evidence last scored, so unchanged evidence is not sent to Jev again
+    scored_rev: str = ""  # the evidence last fully scored, for the record (app's cache decides what is sent again)
     early_line: int | None = None  # first line of earlier talk that already looked like an answer
     decision_lines: list[int] = field(default_factory=list)  # the lines Jev's tick rested on
     pass_lines: list[list[int]] = field(default_factory=list)  # the lines behind each counted pass

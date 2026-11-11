@@ -7,8 +7,8 @@
 
 Then from the independent review of that fix (PR 11): line ticks must keep their evidence, a hand-back to
 Jev must forget line scores, one long question must not overflow a request, and partial progress must
-reach the page. And from its second round (PR 12): a question's main point and its lines are scored in
-separate requests, so either can fail on its own.
+reach the page. And from its second and third rounds (PR 12): a question's main point, lines and fit are
+scored in separate requests, so any of them can fail on its own and must be retried on its own.
 """
 
 import json
@@ -444,8 +444,8 @@ class IncompleteScoringTests(unittest.IsolatedAsyncioTestCase):
         first = len(sent)
         self.assertGreater(first, 1)  # the question really was split
         self.assertEqual(s.questions[0].scored_rev, "")
-        await app.score_pass(now=1.0)
-        self.assertGreater(len(sent), first)  # the same evidence is sent again
+        await app.score_pass(now=13.0)
+        self.assertGreater(len(sent), first)  # the missing pieces of the same evidence are sent again
 
     async def test_a_window_with_a_failed_later_batch_is_scored_again(self):
         s = self.session(asked=False)
@@ -453,9 +453,121 @@ class IncompleteScoringTests(unittest.IsolatedAsyncioTestCase):
         await app.score_pass(now=100.0)
         first = len(sent)
         self.assertGreater(first, 1)
-        self.assertNotIn("window_rev", app.cache)
         await app.score_pass(now=200.0)
         self.assertGreater(len(sent), first)
+
+
+class Recorder(FakeJev):
+    """Answers every scoring question it is sent, except those `drop` names, and records what was sent."""
+
+    def __init__(self, drop=lambda name: False, answer=0.1):
+        super().__init__()
+        self.drop, self.answer, self.sent = drop, answer, []
+
+    async def score(self, lines, items, with_fit=True, purpose="answers", only=None):
+        from callcoach.jev import score_names, scores_from_names
+        names = {n for i in items for n in score_names(i, with_fit)}
+        names = names if only is None else names & only
+        self.sent.append(sorted(names))
+        value = self.answer if callable(self.answer) else (lambda name: self.answer)
+        return scores_from_names(items, {n: value(n) for n in names if not self.drop(n)}, with_fit)
+
+
+class RetryModelTests(unittest.IsolatedAsyncioTestCase):
+    """Round 3: answers are cached per evidence and scoring question, only missing ones are sent again,
+    retries are throttled by the last attempt, and failing stretches take turns with the others."""
+
+    async def asyncTearDown(self):
+        if app.jev and hasattr(app.jev, "aclose"):
+            await app.jev.aclose()
+        app.jev = None
+
+    def session(self, markdown: str):
+        app.session = s = app.Session()
+        s.questions = parse_questions(markdown).questions
+        s.questions_path, s.call_id, s.state = Path("/tmp/retry.md"), "20261111-100000-abcdef", "listening"
+        app.limits.clear()
+        app.limits.update(LIMITS)
+        app.cache.clear()
+        return s
+
+    async def test_failing_stretches_do_not_starve_a_later_question(self):
+        md = "".join(f"{n}. Question {n}?\n   - first line\n   - second line\n" for n in range(1, 7)) + "7. Last one?\n"
+        s = self.session(md)
+        for n in range(7):
+            s.lines += [line(2 * n, "You", f"Question {n + 1}?"), line(2 * n + 1, "Them", f"Answer {n + 1}.")]
+            app.mark_asked(str(n + 1), s.lines[2 * n])
+        # 1 to 6 stay open (a low main score) and every request about their lines fails; 7 is answered.
+        app.jev = jev = Recorder(drop=lambda name: "p" in name, answer=lambda name: 0.99 if name == "a7" else 0.1)
+        await app.score_pass(now=0.0)
+        self.assertEqual(len(jev.sent), app.STRETCH_GROUPS_PER_PASS)  # six slots, all taken by 1 to 6
+        self.assertNotIn("a7", sum(jev.sent, []))
+        self.assertTrue(all(q.status == "open" for q in s.questions[:6]))
+        await app.score_pass(now=4.0)  # 1 to 6 are not due again yet, so 7 gets its turn
+        self.assertEqual(jev.sent[-1], ["a7"])
+        self.assertTrue(s.questions[6].answered)
+        await app.score_pass(now=13.0)  # then 1 to 6 retry only their missing lines
+        self.assertTrue(all(all("p" in n for n in b) for b in jev.sent[7:]))
+
+    async def test_window_line_failure_is_throttled_and_only_the_gap_is_sent(self):
+        s = self.session(long_question())
+        s.lines = [line(0, "Them", "é" * 3000), line(1, "Them", "é" * 3000), line(2, "Them", "é" * 3000)]
+        app.jev, sent = split_jev(lambda qs: "a1p50" in qs, answer=0.1)
+        await app.score_pass(now=100.0)
+        first, failed = len(sent), next(b for b in sent if "a1p50" in b)
+        await app.score_pass(now=104.0)
+        self.assertEqual(len(sent), first)  # not again within WINDOW_EVERY, though a piece is missing
+        await app.score_pass(now=112.0)
+        self.assertEqual(sorted(sum(sent[first:], [])), failed)  # only the failed request's questions
+        await app.score_pass(now=124.0)
+        self.assertEqual(sum(sent[first:], []).count("a1"), 0)  # an answered question is never re-sent
+
+    async def test_window_fit_failure_is_throttled_and_only_the_fit_is_sent(self):
+        s = self.session(LIST)
+        s.lines = [line(0, "Them", "We sold to fifteen shops."), line(1, "You", "Okay.")]
+        app.jev = jev = Recorder(drop=lambda name: name == "f2")
+        await app.score_pass(now=100.0)
+        self.assertIn("f2", jev.sent[0])
+        await app.score_pass(now=104.0)
+        self.assertEqual(len(jev.sent), 1)
+        jev.drop = lambda name: False
+        await app.score_pass(now=112.0)
+        self.assertEqual(jev.sent[1], ["f2"])
+        for now in (124.0, 136.0, 148.0):
+            await app.score_pass(now=now)
+        self.assertEqual(len(jev.sent), 2)  # complete now: unchanged evidence is not sent again
+
+    async def test_stretch_line_failure_is_throttled_and_only_the_gap_is_sent(self):
+        s = self.session(LIST)
+        s.lines = [line(0, "Them", "Good to see you."), line(1, "You", "You too."),
+                   line(2, "You", "What did the trade show teach you?"), line(3, "Them", "Plenty.")]
+        app.mark_asked("2", s.lines[2])  # its stretch is not the same evidence as the window
+        app.jev = jev = Recorder(drop=lambda name: name == "a2p1")
+
+        def stretch():  # the requests about question 2 (the others are the window's, for 1 and 3)
+            return [b for b in jev.sent if any(n.startswith("a2") for n in b)]
+        await app.score_pass(now=0.0)
+        self.assertEqual(stretch(), [["a2", "a2p0", "a2p1", "a2p2"]])
+        await app.score_pass(now=4.0)
+        self.assertEqual(len(stretch()), 1)
+        jev.drop = lambda name: False
+        await app.score_pass(now=13.0)
+        self.assertEqual(stretch()[1], ["a2p1"])
+        self.assertEqual(s.questions[1].scored_rev, app.revision(app.evidence_lines(2, None)))
+        for now in (26.0, 39.0, 52.0):
+            await app.score_pass(now=now)
+        self.assertEqual(len(stretch()), 2)  # complete: unchanged evidence is never sent again
+
+    async def test_a_correction_drops_the_cached_answers(self):
+        s = self.session(LIST)
+        s.lines = [line(0, "You", "What did the trade show teach you?"), line(1, "Them", "Plenty.")]
+        app.mark_asked("2", s.lines[0])
+        app.jev = jev = Recorder()
+        await app.score_pass(now=0.0)
+        s.lines[1]["text"] = "Plenty, and self-serve stays on."
+        app.invalidate(s.lines[1])
+        await app.score_pass(now=1.0)  # new evidence: sent at once, in full
+        self.assertEqual(jev.sent[-1], ["a2", "a2p0", "a2p1", "a2p2"])
 
 
 class LinesWithoutMainScoreTests(unittest.IsolatedAsyncioTestCase):

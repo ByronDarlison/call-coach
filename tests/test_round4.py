@@ -107,7 +107,8 @@ class WindowBoundaryTests(unittest.IsolatedAsyncioTestCase):
         app.jev = Scores()
         await app.score_pass(now=100.0)
         self.assertEqual(seen, ["answers", "stretch"])
-        self.assertIn("window_rev", app.cache)
+        self.assertEqual(app.missing(app.revision(app.evidence_lines(42 - app.WINDOW_LINES, None)),
+                                     [q for q in s.questions if s.eligible(q)], True), set())  # all answered
         self.assertEqual(s.questions[0].status, "answered")
 
 

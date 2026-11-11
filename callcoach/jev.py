@@ -112,14 +112,44 @@ def part_key(key: str, n: int) -> str:
     return f"{key}/p{n}"
 
 
+def score_names(item, with_fit: bool) -> dict[str, tuple[str, int]]:
+    """Every scoring question asked about an item, by the name sent to Jev: its main point ("a1"), each of
+    its lines ("a1p0", ...) and, when asked for, its fit ("f1"). Each maps to where its answer goes in
+    score()'s result: (key, 0) for an answer, (key, 1) for a fit. These are the units that are cached and
+    retried, since any of them can be in a request that fails."""
+    slug = item.key.replace(".", "-")
+    out = {f"a{slug}": (item.key, 0)}
+    out.update({f"a{slug}p{n}": (part_key(item.key, n), 0) for n in range(len(scored_parts(item)))})
+    if with_fit:
+        out[f"f{slug}"] = (item.key, 1)
+    return out
+
+
+def answers_by_name(items: list, scores: dict, with_fit: bool) -> dict[str, float]:
+    """The valid answers in a score() result, by scoring name."""
+    out = {}
+    for item in items:
+        for name, (key, i) in score_names(item, with_fit).items():
+            value = scores.get(key, (None, None))[i]
+            if value is not None:
+                out[name] = value
+    return out
+
+
+def scores_from_names(items: list, answers: dict[str, float], with_fit: bool) -> dict:
+    """score()'s result rebuilt from answers by scoring name; a missing name is None."""
+    out: dict = {}
+    for item in items:
+        for name, (key, i) in score_names(item, with_fit).items():
+            pair = list(out.get(key, (None, None)))
+            pair[i] = answers.get(name)
+            out[key] = tuple(pair)
+    return out
+
+
 def scored_completely(item, scores: dict, with_fit: bool) -> bool:
-    """True when Jev gave a valid score for everything asked about this item: its main point, each of its
-    lines and, when asked for, its fit. The scoring questions are split across requests and any request can
-    fail, so a missing piece means this evidence must be scored again, not marked as done."""
-    main, fit = scores.get(item.key, (None, None))
-    return (main is not None and (fit is not None or not with_fit)
-            and all(scores.get(part_key(item.key, n), (None, None))[0] is not None
-                    for n in range(len(scored_parts(item)))))
+    """True when Jev gave a valid answer to every scoring question about this item (see score_names)."""
+    return len(answers_by_name([item], scores, with_fit)) == len(score_names(item, with_fit))
 
 
 def request_size(body: dict) -> dict:
@@ -318,18 +348,20 @@ class JevClient:
             h.paused_until = time.monotonic() + PAUSE_SECONDS
             h.error += f" (paused for {PAUSE_SECONDS} s after {h.failures} failures)"
 
-    async def score(self, lines: list[dict], items: list, with_fit: bool = True,
-                    purpose: str = "answers") -> dict[str, tuple[float | None, float | None]]:
+    async def score(self, lines: list[dict], items: list, with_fit: bool = True, purpose: str = "answers",
+                    only: set[str] | None = None) -> dict[str, tuple[float | None, float | None]]:
         """Score items (questions and follow-ups) against these turns: has the interviewee answered its
-        main point, and how well would it fit as the next question. None means Jev gave no valid answer.
-        Long lists are split into several requests that stay inside the broker's limits."""
+        main point (and each line of a question with several), and how well would it fit as the next
+        question. None means Jev gave no valid answer. Long lists are split into several requests that stay
+        inside the broker's limits. only, when given, limits the request to those scoring names (see
+        score_names), for a retry of the pieces a failed request left out."""
         if not items or not lines:
             return {}
         state = ("Interview transcript, most recent last. 'You' is the interviewer; 'Them' is the person "
                  "being interviewed. " + DATA_NOTICE + "\n\n" + turns_json(lines))
         out: dict[str, tuple[float | None, float | None]] = {}
         answers: dict = {}
-        for batch in self._batches(items, state, with_fit):
+        for batch in self._batches(items, state, with_fit, only):
             answers.update(await self._ask(purpose, state, batch) or {})  # a failed batch leaves its keys unknown
         for item in items:
             slug = item.key.replace(".", "-")
@@ -359,13 +391,16 @@ class JevClient:
                 f"now: {quoted}")}
         return out
 
-    def _batches(self, items: list, state: str, with_fit: bool) -> list[dict]:
-        """Split the scoring questions (every item's answer, fit and line questions) into requests that each
-        fit the broker, measured exactly as they will be sent. Split between single questions, not between
-        items, since one question written on many lines can need more than one request by itself."""
+    def _batches(self, items: list, state: str, with_fit: bool, only: set[str] | None = None) -> list[dict]:
+        """Split the scoring questions (every item's answer, fit and line questions; only those named in
+        only, when given) into requests that each fit the broker, measured exactly as they will be sent.
+        Split between single questions, not between items, since one question written on many lines can need
+        more than one request by itself."""
         batches, current = [], {}
         for item in items:
             for name, spec in self._score_questions(item, with_fit).items():
+                if only is not None and name not in only:
+                    continue
                 trial = {**current, name: spec}
                 body = {"model": self.model, "state": state, "questions": trial}
                 if current and (len(trial) > MAX_DECISIONS or request_size(body)["bytes"] > MAX_BODY_BYTES):
