@@ -82,6 +82,11 @@ class Question(Item):
     part_hits: list[int] = field(default_factory=list)  # passes over the bar per line, on different evidence
     part_revs: list[str] = field(default_factory=list)  # the evidence last counted per line
     parts_answered: int = 0  # lines that count as answered
+    part_lines: list[list[int]] = field(default_factory=list)  # per line: transcript ids its scores over the bar came from
+
+    def clear_parts(self) -> None:
+        """Forget every line score (a correction or a hand-back to Jev): they rest on old evidence."""
+        self.part_best, self.part_hits, self.part_revs, self.part_lines, self.parts_answered = [], [], [], [], 0
 
     @property
     def parts_total(self) -> int:

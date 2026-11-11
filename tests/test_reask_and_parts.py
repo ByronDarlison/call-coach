@@ -4,6 +4,10 @@
    was recorded as a new off-list question, and the listed question stayed open.
 2. A question with several lines, mostly answered (some of it before it was asked), stayed open.
 3. "I don't know yet" ticked a question as answered.
+
+Then from the independent review of that fix (PR 11): line ticks must keep their evidence, a hand-back to
+Jev must forget line scores, one long question must not overflow a request, and partial progress must
+reach the page.
 """
 
 import json
@@ -14,7 +18,8 @@ from pathlib import Path
 import httpx
 
 from callcoach import app
-from callcoach.jev import JevClient, LineCheck, apply_final_scores, apply_scores, part_key, thresholds
+from callcoach.jev import (MAX_BODY_BYTES, MAX_DECISIONS, JevClient, LineCheck, apply_final_scores, apply_scores,
+                           part_key, request_size, thresholds, turns_json)
 from callcoach.questions import parse_questions, render_results
 
 from .test_core import FakeJev, line
@@ -217,6 +222,145 @@ class FinalEvidenceTests(unittest.IsolatedAsyncioTestCase):
         app.jev = Recording()
         await app.final_scores()
         self.assertTrue(any(0 in ids and "2" in keys for ids, keys in seen))
+
+
+def parts(*scores, key="2"):
+    return {part_key(key, n): (v, None) for n, v in enumerate(scores)}
+
+
+class PartEvidenceTests(unittest.IsolatedAsyncioTestCase):
+    """Review 1: a tick from line scores keeps every line of evidence behind it."""
+
+    async def asyncTearDown(self):
+        app.jev = None
+
+    async def test_a_tick_keeps_line_evidence_from_a_longer_earlier_stretch(self):
+        s = session_with_list()
+        s.lines = [line(0, "Them", "We talked to about fifteen; no contracts."), line(1, "You", "Okay."),
+                   line(2, "You", "What did the trade show teach you?"), line(3, "Them", "The CEO is on side."),
+                   line(4, "Them", "Self-serve stays on."), line(5, "You", "Right.")]
+        app.mark_asked("2", s.lines[2])
+        q = s.questions[1]
+        app.decide([q], {"2": (0.1, None), **parts(0.5, 0.55, 0.1)}, {"2": "long"}, s.lines[0:6])
+        self.assertEqual(q.status, "open")  # one pass per line so far
+        # A delayed match shortened the stretch: the second pass sees only lines 2 and 3.
+        app.decide([q], {"2": (0.1, None), **parts(0.5, 0.55, 0.1)}, {"2": "short"}, s.lines[2:4])
+        self.assertTrue(q.answered)
+        self.assertIn(0, q.decision_lines)
+        s.lines[0]["text"] = "We have not talked to anyone yet."  # outside the stretch the tick now rests on
+        app.invalidate(s.lines[0])
+        self.assertEqual(q.status, "open")
+
+    async def test_at_stop_an_answer_outside_the_stretch_is_tracked(self):
+        s = session_with_list()
+        s.lines = [line(0, "Them", "We talked to about fifteen; self-serve stays on."), line(1, "You", "Okay."),
+                   line(2, "You", "What did the trade show teach you?"), line(3, "Them", "Not much."),
+                   line(4, "You", "Who should be in the room?"), line(5, "Them", "Not sure.")]
+        app.mark_asked("2", s.lines[2])
+        app.mark_asked("3", s.lines[4])
+
+        class Outside(FakeJev):
+            async def score(self, lines, items, **k):
+                ids = [l["id"] for l in lines]
+                hit = 0.6 if 0 in ids else 0.1
+                out = {i.key: (0.1, None) for i in items}
+                out.update(parts(0.1, hit, hit))
+                return out
+        app.jev = Outside()
+        await app.final_scores()
+        q = s.questions[1]
+        self.assertEqual(q.decided_by, "jev at stop")
+        self.assertIn(0, q.decision_lines)
+        s.lines[0]["text"] = "We have not started yet."
+        app.invalidate(s.lines[0])
+        self.assertEqual(q.status, "open")
+
+
+class AutoTests(unittest.TestCase):
+    """Review 2: handing a question back to Jev forgets its line scores."""
+
+    def test_zero_scores_after_auto_leave_it_open(self):
+        s = session_with_list()
+        s.lines = [line(0, "You", "What did the trade show teach you?"), line(1, "Them", "Plenty.")]
+        app.mark_asked("2", s.lines[0])
+        q = s.questions[1]
+        app.decide([q], {"2": (0.1, None), **parts(0.7, 0.7, 0.0)}, {"2": "a"}, s.lines)
+        self.assertTrue(q.answered)
+        app.set_state("2", "auto", "you")
+        self.assertEqual((q.part_best, q.part_hits, q.part_revs, q.part_lines, q.parts_answered), ([], [], [], [], 0))
+        app.decide([q], {"2": (0.0, None), **parts(0.0, 0.0, 0.0)}, {"2": "b"}, s.lines)
+        self.assertEqual(q.status, "open")
+
+
+class LongQuestionTests(unittest.IsolatedAsyncioTestCase):
+    """Review 3: one question written on many lines must not overflow the broker's request limits."""
+
+    def long_question(self):
+        # Parser-valid: 50 lines, under the 600-character limit, in two-byte characters.
+        text = "1. " + "é" * 180 + "?\n" + "".join(f"   - {'é' * 2} {n}\n" for n in range(50))
+        q = parse_questions(text).questions[0]
+        self.assertEqual(len(q.parts), 51)
+        return q
+
+    def full_state(self):
+        lines = [line(i, "Them", "é" * 400) for i in range(60)]  # more than the evidence limit holds
+        return ("Interview transcript, most recent last. 'You' is the interviewer; 'Them' is the person being "
+                "interviewed. " + __import__("callcoach.jev", fromlist=["DATA_NOTICE"]).DATA_NOTICE + "\n\n"
+                + turns_json(lines)), lines
+
+    def jev(self, handler):
+        os.environ["CC_TEST_KEY"] = "k"
+        jev = JevClient({"api_key_env": "CC_TEST_KEY"})
+        jev.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        return jev
+
+    def test_every_request_fits_even_for_one_question(self):
+        q = self.long_question()
+        state, _ = self.full_state()
+        batches = self.jev(lambda r: httpx.Response(200))._batches([q], state, with_fit=True)
+        self.assertGreater(len(batches), 1)
+        self.assertEqual(sum(len(b) for b in batches), 53)  # the answer, its fit and 51 lines
+        for body in batches:
+            self.assertLessEqual(request_size({"model": "jev-latest", "state": state, "questions": body})["bytes"],
+                                 MAX_BODY_BYTES)
+            self.assertLessEqual(len(body), MAX_DECISIONS)
+
+    def test_many_long_questions_stay_under_the_decision_limit(self):
+        qs = [parse_questions("1. Q?\n" + "".join(f"   - line {n}\n" for n in range(40))).questions[0]
+              for _ in range(6)]
+        for n, q in enumerate(qs):
+            q.number = n + 1
+        batches = self.jev(lambda r: httpx.Response(200))._batches(qs, "state", with_fit=True)
+        self.assertEqual(sum(len(b) for b in batches), 6 * 43)
+        self.assertTrue(all(len(b) <= MAX_DECISIONS for b in batches))
+        self.assertGreater(len(batches), 1)
+
+    async def test_answers_from_several_requests_are_merged(self):
+        sizes = []
+
+        def handler(request):
+            body = json.loads(request.content)
+            sizes.append(len(request.content))
+            return httpx.Response(200, json={"answers": {k: {"noul": 0.5} for k in body["questions"]},
+                                             "usage": {"input_tokens": 10}})
+        q = self.long_question()
+        _, lines = self.full_state()
+        scores = await self.jev(handler).score(lines, [q], with_fit=False)
+        self.assertGreater(len(sizes), 1)
+        self.assertTrue(all(n <= MAX_BODY_BYTES for n in sizes))
+        self.assertEqual(scores["1"], (0.5, None))
+        self.assertTrue(all(scores[part_key("1", n)] == (0.5, None) for n in range(51)))
+
+
+class PartialUpdateTests(unittest.TestCase):
+    """Review 4: partial progress is a visible change, so the page is told."""
+
+    def test_a_line_answered_without_a_tick_counts_as_a_change(self):
+        q = parse_questions(LIST).questions[1]
+        q.asked = True
+        self.assertTrue(apply_scores([q], {"2": (0.1, None), **parts(0.7, 0.1, 0.1)}, {"2": "a"}, LIMITS))
+        self.assertEqual((q.status, q.parts_answered), ("open", 1))
+        self.assertFalse(apply_scores([q], {"2": (0.1, None), **parts(0.7, 0.1, 0.1)}, {"2": "b"}, LIMITS))
 
 
 if __name__ == "__main__":

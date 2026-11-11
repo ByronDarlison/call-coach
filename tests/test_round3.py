@@ -204,11 +204,8 @@ class ByteLimitTests(unittest.TestCase):
         state = "Interview transcript. " + app.turns_json([line(i, "Them", "日本語" * 400) for i in range(40)])
         self.assertLessEqual(utf16_units(state), MAX_STATE_UNITS)
         batches = jev._batches(items, state, with_fit=True)
-        self.assertEqual(sum(len(b) for b in batches), 300)
-        for batch in batches:
-            questions = {}
-            for item in batch:
-                questions.update(jev._score_questions(item, True))
+        self.assertEqual(sum(len(b) for b in batches), 600)  # an answer and a fit question for each
+        for questions in batches:
             size = request_size({"model": "jev-latest", "state": state, "questions": questions})
             self.assertLessEqual(size["bytes"], MAX_BODY_BYTES)
             self.assertLessEqual(len(questions), MAX_DECISIONS)

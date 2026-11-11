@@ -330,11 +330,8 @@ class LimitTests(unittest.TestCase):
         jev = JevClient({"api_key_env": "CC_TEST_KEY"})
         items = [Question(text=("é" * 300) + f" question {n}?", number=n) for n in range(1, 301)]
         batches = jev._batches(items, "x" * 12000, with_fit=True)
-        self.assertEqual(sum(len(b) for b in batches), 300)
-        for batch in batches:
-            body = {}
-            for item in batch:
-                body.update(jev._score_questions(item, True))
+        self.assertEqual(sum(len(b) for b in batches), 600)  # an answer and a fit question for each
+        for body in batches:
             self.assertLessEqual(len(body), MAX_DECISIONS)
             self.assertLessEqual(len(json.dumps(body, ensure_ascii=False)) + 12000, MAX_BODY_CHARS + 400)
 

@@ -707,14 +707,19 @@ def decide(items: list[Item], scores: dict, revisions: dict, evidence: list[dict
     of any of them reopens it whatever has happened to the question's stretch since."""
     before = {id(i): (i.status, i.high_passes) for i in items}
     ids = [l["id"] for l in evidence]
-    changed = apply_scores(items, scores, revisions, limits)
+    changed = apply_scores(items, scores, revisions, limits, ids)
     for item in items:
         status, passes = before[id(item)]
         if item.high_passes > passes:
             item.pass_lines.append(ids)  # every counted pass keeps its own evidence
         if item.status == "answered" and status != "answered":
-            item.decision_lines = sorted({i for p in item.pass_lines for i in p} | set(ids))
+            item.decision_lines = sorted({i for p in item.pass_lines + part_lines(item) for i in p} | set(ids))
     return changed
+
+
+def part_lines(item: Item) -> list[list[int]]:
+    """The evidence behind each line score of a question with several (none for other items)."""
+    return list(getattr(item, "part_lines", None) or [])
 
 
 def stretch_start(item: Item) -> int | None:
@@ -823,9 +828,7 @@ async def final_scores() -> None:
     def keep(scores: dict, part: list[dict]) -> None:
         for key, (answered, _) in scores.items():
             if answered is not None and (best.get(key, (None,))[0] or -1) < answered:
-                best[key] = (answered, None)
-                if "/" not in key:
-                    source[key] = [l["id"] for l in part]
+                best[key], source[key] = (answered, None), [l["id"] for l in part]
 
     for item in [i for i in open_ if i.asked_line is not None]:
         for part in chunks(evidence_lines(stretch_start(item), item.stretch_end)):
@@ -834,10 +837,11 @@ async def final_scores() -> None:
     if whole_call:
         for part in chunks(evidence_lines(0, None)):
             keep(await jev.score(part, whole_call, with_fit=False, purpose="final"), part)
-    apply_final_scores(open_, best, limits)
+    apply_final_scores(open_, best, limits, source)
     for item in open_:
         if item.status == "answered":
-            item.decision_lines = source.get(item.key, [])
+            # The whole question's best chunk, and every chunk a line score over the bar came from.
+            item.decision_lines = sorted(set(source.get(item.key, [])) | {i for p in part_lines(item) for i in p})
 
 
 # ---------- loading questions ----------
@@ -1262,6 +1266,8 @@ def set_state(key: str, state: str, actor: str, reason: str | None = None) -> It
         item.status, item.manual, item.decided_by, item.decided_at, item.skip_reason = "open", False, None, None, None
         item.high_passes, item.evidence_rev, item.scored_rev = 0, "", ""
         item.pass_lines, item.decision_lines = [], []  # old evidence no longer supports anything
+        if isinstance(item, Question):
+            item.clear_parts()
         cache.clear()  # rescore on the next pass
     elif state in ("answered", "open", "skipped"):
         item.decide(state, actor, item.answered_score if state == "answered" else None, reason)
@@ -1719,7 +1725,7 @@ def invalidate(line: dict) -> None:
         start = stretch_start(item)  # the evidence scoring uses now, including earlier talk
         on_line = start is None or (start - 1 <= line["id"] and (item.stretch_end is None or line["id"] < item.stretch_end))
         # The evidence Jev actually used: the tick's lines and every counted pass still contributing.
-        rested_on = line["id"] in item.decision_lines or any(line["id"] in p for p in item.pass_lines)
+        rested_on = line["id"] in item.decision_lines or any(line["id"] in p for p in item.pass_lines + part_lines(item))
         affected = rested_on or on_line
         if item.decided_by in ("jev", "jev at stop") and affected:
             item.status, item.decided_by, item.decided_at, item.decision_score = "open", None, None, None
@@ -1727,7 +1733,7 @@ def invalidate(line: dict) -> None:
         if affected:
             item.high_passes, item.evidence_rev, item.scored_rev, item.pass_lines = 0, "", "", []
             if isinstance(item, Question):
-                item.part_best, item.part_hits, item.part_revs, item.parts_answered = [], [], [], 0
+                item.clear_parts()
     cache.clear()
 
 
