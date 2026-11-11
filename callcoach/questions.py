@@ -33,7 +33,8 @@ class Item:
     best_score: float = 0.0
     fit_score: float = 0.0
     high_passes: int = 0
-    evidence_rev: str = ""  # the evidence last counted towards high_passes, so retries are not counted twice
+    evidence_rev: str = ""  # the evidence last counted towards high_passes (a record; counted_revs decides)
+    counted_revs: list[str] = field(default_factory=list)  # every evidence counted towards high_passes, once each
     scored_rev: str = ""  # the evidence last fully scored, for the record (app's cache decides what is sent again)
     early_line: int | None = None  # first line of earlier talk that already looked like an answer
     decision_lines: list[int] = field(default_factory=list)  # the lines Jev's tick rested on
@@ -80,13 +81,15 @@ class Question(Item):
     # For a question with several lines (parts), each line is scored on its own:
     part_best: list[float] = field(default_factory=list)  # best score per line
     part_hits: list[int] = field(default_factory=list)  # passes over the bar per line, on different evidence
-    part_revs: list[str] = field(default_factory=list)  # the evidence last counted per line
+    part_revs: list[str] = field(default_factory=list)  # the evidence last counted per line (a record)
+    part_counted: list[list[str]] = field(default_factory=list)  # per line: every evidence counted, once each
     parts_answered: int = 0  # lines that count as answered
     part_lines: list[list[int]] = field(default_factory=list)  # per line: transcript ids its scores over the bar came from
 
     def clear_parts(self) -> None:
         """Forget every line score (a correction or a hand-back to Jev): they rest on old evidence."""
         self.part_best, self.part_hits, self.part_revs, self.part_lines, self.parts_answered = [], [], [], [], 0
+        self.part_counted = []
 
     @property
     def parts_total(self) -> int:

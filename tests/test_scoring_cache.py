@@ -5,6 +5,9 @@
 2. Cached answers are applied whenever the evidence they belong to is current, separately from deciding
    what to send: answers that came back for evidence that changed meanwhile, and answers cached before a
    question was asked, must still be able to tick it.
+
+And from the review of that fix (PR 13): a question asked while the window request is out keeps the
+window's early evidence, and evidence a stretch closes back to is not counted twice.
 """
 
 import asyncio
@@ -151,6 +154,69 @@ class ApplyCachedTests(unittest.IsolatedAsyncioTestCase):
         q1 = s.questions[0]
         self.assertEqual((q1.status, q1.high_passes), ("open", 1))
         self.assertEqual(len(q1.pass_lines), 1)
+
+
+class AskedDuringWindowTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncTearDown(self):
+        app.jev = None
+
+    async def test_a_question_asked_while_the_window_is_out_keeps_its_early_evidence(self):
+        s = session()
+        s.lines = [line(0, "Them", "We talked to fifteen; self-serve stays on."), line(1, "You", "Okay."),
+                   line(2, "Them", "And the CEO is on side."), line(3, "You", "Good."),
+                   line(4, "You", "What did the trade show teach you?"), line(5, "Them", "As I said.")]
+        app.jev = jev = Scripted(lambda name: 0.7 if name.startswith(("a2", "f2")) else 0.1)
+        jev.during = lambda purpose: app.mark_asked("2", s.lines[4]) if purpose == "answers" else None
+        await app.score_pass(now=100.0)
+        q2 = s.questions[1]
+        self.assertEqual(q2.early_line, 0)  # the window's answers still mark the earlier talk
+        self.assertTrue(q2.answered)  # its stretch is that window: the cached answers count at the asked bar
+        self.assertEqual([p for p, _ in jev.sent], ["answers"])  # no stretch request was needed
+
+
+class CountedOnceTests(unittest.IsolatedAsyncioTestCase):
+    """Evidence a stretch closes back to (A, then B, then A again) counts once."""
+
+    async def asyncTearDown(self):
+        app.jev = None
+        app.limits["passes"] = thresholds()["passes"]
+
+    async def a_b_a(self, key: str, answer):
+        s = session()
+        app.limits["passes"] = 3
+        s.lines = [line(0, "You", "Question?"), line(1, "Them", "An answer.")]
+        app.mark_asked(key, s.lines[0])
+        app.jev = Scripted(answer)
+        await app.score_pass(now=0.0)  # A: lines 0 and 1
+        s.lines.append(line(2, "You", "Who should be in the room for the planning day?"))
+        await app.score_pass(now=4.0)  # B: lines 0 to 2
+        app.mark_asked("3", s.lines[2])  # a delayed match closes the stretch back to A
+        await app.score_pass(now=8.0)  # A again, from the cache
+        return s.questions[int(key) - 1]
+
+    async def test_the_whole_question(self):
+        q = await self.a_b_a("1", lambda n: 0.5)  # over the bar, not enough for one pass alone
+        self.assertEqual((q.high_passes, q.status), (2, "open"))
+        self.assertEqual(len(q.pass_lines), 2)
+
+    async def test_each_line(self):
+        q = await self.a_b_a("2", lambda n: 0.5 if n in ("a2p0", "a2p1") else 0.1)
+        self.assertEqual(q.part_hits[:2], [2, 2])
+        self.assertEqual(q.status, "open")
+
+    def test_auto_and_corrections_forget_what_was_counted(self):
+        s = session()
+        s.lines = [line(0, "You", "Question?"), line(1, "Them", "An answer.")]
+        app.mark_asked("2", s.lines[0])
+        q = s.questions[1]
+        app.decide([q], {"2": (0.5, None), "2/p0": (0.5, None)}, {"2": "A"}, s.lines)
+        self.assertEqual((q.counted_revs, q.part_counted[0]), (["A"], ["A"]))
+        app.set_state("2", "auto", "you")
+        self.assertEqual((q.counted_revs, q.part_counted), ([], []))
+        app.decide([q], {"2": (0.5, None), "2/p0": (0.5, None)}, {"2": "A"}, s.lines)
+        s.lines[1]["text"] = "A different answer."
+        app.invalidate(s.lines[1])
+        self.assertEqual((q.counted_revs, q.part_counted), ([], []))
 
 
 if __name__ == "__main__":

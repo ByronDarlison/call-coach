@@ -781,6 +781,9 @@ async def score_pass(now: float | None = None) -> bool:
         await fetch(window_rev, window, unasked, True, "answers")
         if session.call_id != call:
             return False
+        session.refresh_stretches()  # a question may have been asked while the window was out
+        open_ = [i for i in session.items() if i.status == "open" and not i.manual]
+    note_early_evidence(open_)  # before the stretches are built: it can move where they start
     tried: dict = cache.setdefault("tried", {})
     groups = {rev: g for rev, g in stretch_groups(open_).items() if missing(rev, g[1], False)}
     # Evidence never sent goes first, then the longest since its last attempt; a retry waits WINDOW_EVERY.
@@ -801,16 +804,11 @@ async def score_pass(now: float | None = None) -> bool:
     answers: dict = cache.setdefault("answers", {})
     tried = cache.setdefault("tried", {})
     changed = False
+    note_early_evidence(open_)
     window, window_rev, unasked = current_window(open_)
     if unasked and window and window_rev in answers:
-        scores = scores_from_names(unasked, answers[window_rev], True)
-        for item in unasked:
-            answered = scores.get(item.key, (None, None))[0]
-            lines_ = [scores.get(part_key(item.key, n), (None, None))[0] for n in range(len(scored_parts(item)))]
-            best = max([s for s in [answered, *lines_] if s is not None], default=None)
-            if best is not None and best >= limits["answered"] and item.early_line is None:
-                item.early_line = window[0]["id"]  # earlier talk that may already answer it (or a line of it)
-        changed |= decide(unasked, scores, {i.key: window_rev for i in unasked}, window)
+        changed |= decide(unasked, scores_from_names(unasked, answers[window_rev], True),
+                          {i.key: window_rev for i in unasked}, window)
     stretches = stretch_groups(open_)
     for rev, (lines, items) in stretches.items():
         if rev not in answers:
@@ -828,6 +826,26 @@ async def score_pass(now: float | None = None) -> bool:
         for rev in older[:max(0, len(older) - KEEP_OLD_EVIDENCE)]:
             del store_[rev]
     return changed or session.next_item()[0] is not before
+
+
+def note_early_evidence(open_: list[Item]) -> None:
+    """Earlier talk that may already answer an item: set its early_line from the cached answers for the
+    latest-talk window, so its stretch starts there once it is asked. This covers every open automatic item
+    the window was scored for as not asked yet (its fit was asked), including one asked while that request
+    was on its way, whose answers would otherwise be lost to it."""
+    window, window_rev, _ = current_window(open_)
+    have = cache.get("answers", {}).get(window_rev)
+    if not window or not have:
+        return
+    for item in open_:
+        fit = score_names(item, True).keys() - score_names(item, False).keys()  # asked only when not asked yet
+        if item.early_line is not None or not fit <= have.keys():
+            continue  # already has early evidence, or was not scored in this window as not asked yet
+        scores = scores_from_names([item], have, True)
+        found = [scores.get(item.key, (None, None))[0]] + [scores.get(part_key(item.key, n), (None, None))[0]
+                                                           for n in range(len(scored_parts(item)))]
+        if max([v for v in found if v is not None], default=-1.0) >= limits["answered"]:
+            item.early_line = window[0]["id"]  # earlier talk that may already answer it (or a line of it)
 
 
 def current_window(open_: list[Item]) -> tuple[list[dict], str, list[Item]]:
@@ -1332,7 +1350,7 @@ def set_state(key: str, state: str, actor: str, reason: str | None = None) -> It
     item = session.find(key)
     if state == "auto":
         item.status, item.manual, item.decided_by, item.decided_at, item.skip_reason = "open", False, None, None, None
-        item.high_passes, item.evidence_rev, item.scored_rev = 0, "", ""
+        item.high_passes, item.evidence_rev, item.scored_rev, item.counted_revs = 0, "", "", []
         item.pass_lines, item.decision_lines = [], []  # old evidence no longer supports anything
         if isinstance(item, Question):
             item.clear_parts()
@@ -1800,6 +1818,7 @@ def invalidate(line: dict) -> None:
             item.decision_lines = []
         if affected:
             item.high_passes, item.evidence_rev, item.scored_rev, item.pass_lines = 0, "", "", []
+            item.counted_revs = []
             if isinstance(item, Question):
                 item.clear_parts()
     clear_scores()
